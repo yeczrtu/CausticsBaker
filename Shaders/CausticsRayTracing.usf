@@ -3,6 +3,14 @@
 #include "/Engine/Private/RayTracing/RayTracingCommon.ush"
 #include "/Engine/Private/MonteCarlo.ush"
 
+// Photon batches can contain millions of samples.  Keep the sequence in
+// 32-bit integer space until the final conversion to float; a progressive
+// frac(float(Index) * irrational) sequence loses nearly all fractional bits at
+// those indices and collapses photons onto visible rings / radial spokes.
+// This is the same Owen-scrambled Sobol implementation used by UE's path tracer.
+#define RANDSEQ_ERROR_DIFFUSION 0
+#include "/Engine/Private/PathTracing/Utilities/PathTracingRandomSequence.ush"
+
 RaytracingAccelerationStructure TLAS;
 
 struct FCausticsGpuCaster
@@ -80,15 +88,10 @@ float Random01(inout uint State)
     return (State >> 8) * (1.0 / 16777216.0);
 }
 
-float RadicalInverseVdC(uint Bits)
-{
-    Bits = reversebits(Bits);
-    return float(Bits) * 2.3283064365386963e-10;
-}
-
 float2 LowDiscrepancy2D(uint Index, uint Scramble)
 {
-    return frac(float2((Index + 0.5) * 0.6180339887498949, RadicalInverseVdC(Index ^ Scramble)));
+    FRandomSequence Sequence = RandomSequenceCreate(Scramble, Index);
+    return Sequence.Get2D();
 }
 
 float3 TransformPosition(float3 P, float4x4 M)
