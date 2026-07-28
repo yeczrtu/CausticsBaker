@@ -1,0 +1,606 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/SceneData.ush"
+#include "/Engine/Private/RayTracing/RayTracingCommon.ush"
+#include "/Engine/Private/MonteCarlo.ush"
+
+RaytracingAccelerationStructure TLAS;
+
+struct FCausticsGpuCaster
+{
+    uint PrimitiveId;
+    uint OpticalMode;
+    uint ThicknessMode;
+    float IOR;
+    float4 TintRoughness;
+    float4 AbsorptionThickness;
+};
+
+struct FPhotonRecord
+{
+    float3 Position;
+    uint ReceiverId;
+    float3 Power;
+    uint BinIndex;
+};
+
+StructuredBuffer<uint> ReceiverIds;
+uint ReceiverCount;
+StructuredBuffer<FCausticsGpuCaster> CasterConfigs;
+uint CasterCount;
+
+RWTexture2D<float4> Guide;
+RWTexture2D<uint> GuideId;
+RWTexture2D<float> GuideCoverage;
+RWStructuredBuffer<FPhotonRecord> PhotonRecords;
+
+float4x4 RegionToWorld;
+float4x4 WorldToRegion;
+float3 RegionSize;
+float3 PreViewTranslation;
+uint OutputResolution;
+uint GuideSampleCount;
+uint PhotonCount;
+uint BatchIndex;
+uint RandomSeed;
+uint MaxBounces;
+uint BinGridWidth;
+uint BinGridHeight;
+
+uint LightType;
+float3 LightPosition;
+float3 LightDirection;
+float3 LightColor;
+float LightIntensity;
+float LightSourceRadius;
+float LightSourceAngleRadians;
+float LightAttenuationRadius;
+float LightFalloffExponent;
+uint bInverseSquaredFalloff;
+float SpotInnerCos;
+float SpotOuterCos;
+float3 EmissionCenter;
+float3 EmissionTangent;
+float3 EmissionBitangent;
+float2 EmissionHalfExtent;
+float3 CasterBoundsCenter;
+float CasterBoundsRadius;
+
+uint Hash32(uint X)
+{
+    X ^= X >> 16;
+    X *= 0x7feb352du;
+    X ^= X >> 15;
+    X *= 0x846ca68bu;
+    return X ^ (X >> 16);
+}
+
+float Random01(inout uint State)
+{
+    State = Hash32(State + 0x9e3779b9u);
+    return (State >> 8) * (1.0 / 16777216.0);
+}
+
+float RadicalInverseVdC(uint Bits)
+{
+    Bits = reversebits(Bits);
+    return float(Bits) * 2.3283064365386963e-10;
+}
+
+float2 LowDiscrepancy2D(uint Index, uint Scramble)
+{
+    return frac(float2((Index + 0.5) * 0.6180339887498949, RadicalInverseVdC(Index ^ Scramble)));
+}
+
+float3 TransformPosition(float3 P, float4x4 M)
+{
+    return mul(float4(P, 1.0), M).xyz;
+}
+
+float3 TransformVector(float3 V, float4x4 M)
+{
+    return mul(float4(V, 0.0), M).xyz;
+}
+
+uint GetPersistentPrimitiveId(FPackedMaterialClosestHitPayload Payload)
+{
+    const int SceneInstanceIndex = Payload.GetSceneInstanceIndex();
+    if (SceneInstanceIndex < 0)
+    {
+        return 0xffffffffu;
+    }
+    return GetInstanceSceneData((uint)SceneInstanceIndex).PrimitiveId;
+}
+
+int FindReceiver(uint PrimitiveId)
+{
+    int Lo = 0;
+    int Hi = (int)ReceiverCount - 1;
+    while (Lo <= Hi)
+    {
+        const int Mid = (Lo + Hi) >> 1;
+        const uint Value = ReceiverIds[Mid];
+        if (Value == PrimitiveId) return Mid;
+        if (Value < PrimitiveId) Lo = Mid + 1; else Hi = Mid - 1;
+    }
+    return -1;
+}
+
+int FindCaster(uint PrimitiveId)
+{
+    int Lo = 0;
+    int Hi = (int)CasterCount - 1;
+    while (Lo <= Hi)
+    {
+        const int Mid = (Lo + Hi) >> 1;
+        const uint Value = CasterConfigs[Mid].PrimitiveId;
+        if (Value == PrimitiveId) return Mid;
+        if (Value < PrimitiveId) Lo = Mid + 1; else Hi = Mid - 1;
+    }
+    return -1;
+}
+
+bool TraceMaterial(float3 Origin, float3 Direction, float MinT, out FPackedMaterialClosestHitPayload Payload)
+{
+    Payload = (FPackedMaterialClosestHitPayload)0;
+    Payload.SetLumenPayload();
+    FRayCone RayCone = (FRayCone)0;
+    RayCone.SpreadAngle = 0.0001;
+    FRayDesc Ray;
+    // UE builds the view TLAS in translated-world space.  Keep the integrator
+    // itself in absolute world space, but translate the origin for traversal;
+    // HitT remains invariant and can still reconstruct the absolute hit point.
+    Ray.Origin = Origin + PreViewTranslation;
+    Ray.Direction = Direction;
+    Ray.TMin = MinT;
+    Ray.TMax = 1.0e20;
+    // Assigned optical casters are surfaces of the photon integrator even when
+    // their raster material is translucent.  Skipping the material any-hit
+    // opacity test also matches the engine material-pipeline reference path and
+    // leaves transmission/reflection decisions to the code below.
+    TraceMaterialRayPacked(Payload, TLAS, RAY_FLAG_FORCE_OPAQUE, RAY_TRACING_MASK_ALL, Ray, RayCone, false, true);
+    // IsValid() rejects legitimate hits whose material is Unlit (and can also be
+    // false for a Substrate payload without a populated top layer).  Geometry
+    // traversal and explicit caster/receiver IDs must use the actual hit state.
+    return Payload.IsHit();
+}
+
+// Resolves the optical interface represented by the material hit payload.
+// RayTracingMaterial payloads use UE's fully-simplified Substrate encoding, so
+// the first decoded BSDF is the single surface approximation supplied to RT.
+// This intentionally ignores lower layers; arbitrary Substrate trees cannot be
+// reproduced by this v1 photon payload.
+bool ResolveAutoOptics(
+    FPackedMaterialClosestHitPayload Payload,
+    inout uint OpticalMode,
+    inout uint ThicknessMode,
+    inout float IOR,
+    inout float Roughness,
+    inout float3 Tint)
+{
+#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 1
+    FSubstrateAddressing Addressing = GetSubstratePixelDataByteOffset(0, 0, 0);
+    FSubstratePixelHeader Header = UnpackSubstrateHeaderIn(
+        Payload.SubstrateData, Addressing, Payload.SubstrateData);
+    if (!Header.IsSubstrateMaterial() || Header.ClosureCount == 0u)
+    {
+        return false;
+    }
+
+    const FSubstrateBSDF SurfaceBSDF = UnpackSubstrateBSDFIn(
+        Payload.SubstrateData, Addressing, Header);
+    const uint BSDFType = SubstrateGetBSDFType(SurfaceBSDF);
+    if (BSDFType != SUBSTRATE_BSDF_TYPE_SLAB &&
+        BSDFType != SUBSTRATE_BSDF_TYPE_SINGLELAYERWATER)
+    {
+        return false;
+    }
+
+    const float3 F0 = saturate(SubstrateGetBSDFSpecularF0(SurfaceBSDF));
+    Roughness = max(0.001, SubstrateGetBSDFRoughness(SurfaceBSDF));
+
+    if (BSDFType == SUBSTRATE_BSDF_TYPE_SLAB &&
+        SubstrateGetBSDFMetallic(SurfaceBSDF) >= 0.5)
+    {
+        OpticalMode = 2u;
+        Tint = F0;
+        return true;
+    }
+
+    // The component was explicitly selected as a caustic caster. A non-metal
+    // top Slab (or Single Layer Water) is therefore treated as a dielectric
+    // interface even when an opaque Substrate blend hides its lower layers.
+    OpticalMode = 1u;
+    IOR = max(1.0001, DielectricF0RGBToIor(F0));
+    const float3 MaterialTransmittance = saturate(Payload.GetTransmittancePreCoverage());
+    Tint = max(MaterialTransmittance.x, max(MaterialTransmittance.y, MaterialTransmittance.z)) > 1.0e-4
+        ? MaterialTransmittance
+        : float3(1.0, 1.0, 1.0);
+    if (BSDFType == SUBSTRATE_BSDF_TYPE_SLAB && BSDF_GETISTHIN(SurfaceBSDF) != 0u)
+    {
+        ThicknessMode = 1u;
+    }
+    return true;
+#else
+    Roughness = max(0.001, Payload.GetRoughness());
+    if (Payload.GetMetallic() >= 0.5)
+    {
+        OpticalMode = 2u;
+        Tint = max(0.0, Payload.GetSpecularColor());
+        return true;
+    }
+#if SUBSTRATE_ENABLED
+    // Blendable Substrate exports its simplified surface through the legacy
+    // material payload. As with the adaptive format, a selected non-metal
+    // caster is interpreted as a dielectric top interface.
+    OpticalMode = 1u;
+    IOR = max(1.0001, DielectricF0RGBToIor(saturate(Payload.GetSpecularColor())));
+    Tint = float3(1.0, 1.0, 1.0);
+    return true;
+#else
+    if (Payload.GetBlendingMode() != RAY_TRACING_BLEND_MODE_OPAQUE)
+    {
+        OpticalMode = 1u;
+        IOR = max(1.0001, Payload.GetIor());
+        Tint = max(0.0, Payload.GetBaseColor());
+        return true;
+    }
+    return false;
+#endif
+#endif
+}
+
+RAY_TRACING_ENTRY_RAYGEN(CausticsGuideRG)
+{
+    const uint2 Pixel = DispatchRaysIndex().xy;
+    if (any(Pixel >= OutputResolution)) return;
+
+    float SampleDepths[4];
+    float3 SampleNormals[4];
+    uint SampleIds[4];
+    uint ChosenPrimitive = 0xffffffffu;
+    float ChosenDepth = 1.0e30;
+    bool SawAnyGeometry = false;
+    uint LastUnmatchedPrimitive = 0xffffffffu;
+
+    [loop]
+    for (uint SampleIndex = 0; SampleIndex < GuideSampleCount; ++SampleIndex)
+    {
+        SampleDepths[SampleIndex] = 0.0;
+        SampleNormals[SampleIndex] = float3(0.0, 0.0, 1.0);
+        SampleIds[SampleIndex] = 0xffffffffu;
+        const uint SX = GuideSampleCount == 4 ? (SampleIndex & 1u) : 0u;
+        const uint SY = GuideSampleCount == 4 ? (SampleIndex >> 1u) : 0u;
+        const float2 Jitter = GuideSampleCount == 4 ? (float2(SX, SY) + 0.5) * 0.5 : 0.5;
+        const float2 UV = (float2(Pixel) + Jitter) / float(OutputResolution);
+        const float3 LocalOrigin = float3(0.0, (UV.x - 0.5) * RegionSize.y, (0.5 - UV.y) * RegionSize.z);
+        float3 Origin = TransformPosition(LocalOrigin, RegionToWorld);
+        const float3 Direction = normalize(TransformVector(float3(1.0, 0.0, 0.0), RegionToWorld));
+        float RemainingDepth = RegionSize.x;
+
+        [loop]
+        for (uint Layer = 0; Layer < 16 && RemainingDepth > 0.0; ++Layer)
+        {
+            FPackedMaterialClosestHitPayload Payload;
+            if (!TraceMaterial(Origin, Direction, 0.01, Payload) || Payload.HitT > RemainingDepth)
+            {
+                break;
+            }
+            const float3 WorldPosition = Origin + Direction * Payload.HitT;
+            const uint PrimitiveId = GetPersistentPrimitiveId(Payload);
+            SawAnyGeometry = true;
+            LastUnmatchedPrimitive = PrimitiveId;
+            if (FindReceiver(PrimitiveId) >= 0)
+            {
+                const float LocalDepth = TransformPosition(WorldPosition, WorldToRegion).x;
+                SampleDepths[SampleIndex] = LocalDepth;
+                SampleNormals[SampleIndex] = normalize(Payload.GetWorldNormal());
+                SampleIds[SampleIndex] = PrimitiveId;
+                if (LocalDepth < ChosenDepth)
+                {
+                    ChosenDepth = LocalDepth;
+                    ChosenPrimitive = PrimitiveId;
+                }
+                break;
+            }
+            const float Step = Payload.HitT + 0.05;
+            Origin += Direction * Step;
+            RemainingDepth -= Step;
+        }
+    }
+
+    float MatchingSamples = 0.0;
+    float DepthSum = 0.0;
+    float3 NormalSum = 0.0;
+    [unroll(4)]
+    for (uint SampleIndex = 0; SampleIndex < 4; ++SampleIndex)
+    {
+        if (SampleIndex < GuideSampleCount && SampleIds[SampleIndex] == ChosenPrimitive)
+        {
+            MatchingSamples += 1.0;
+            DepthSum += SampleDepths[SampleIndex];
+            NormalSum += SampleNormals[SampleIndex];
+        }
+    }
+    const float Coverage = MatchingSamples / max(1u, GuideSampleCount);
+    if (ChosenPrimitive != 0xffffffffu && MatchingSamples > 0.0)
+    {
+        const float InvHitCount = rcp(MatchingSamples);
+        Guide[Pixel] = float4(DepthSum * InvHitCount, normalize(NormalSum));
+        GuideId[Pixel] = ChosenPrimitive;
+        GuideCoverage[Pixel] = Coverage;
+    }
+    else
+    {
+        // Coverage and GuideId remain authoritative.  The negative Y marker is
+        // retained only so CPU readback can distinguish a projection miss from
+        // an ID mismatch and report a useful error instead of failing silently.
+        Guide[Pixel] = float4(asfloat(LastUnmatchedPrimitive), SawAnyGeometry ? -1.0 : -2.0, 0.0, 0.0);
+        GuideId[Pixel] = 0xffffffffu;
+        GuideCoverage[Pixel] = 0.0;
+    }
+}
+
+void BuildBasis(float3 N, out float3 T, out float3 B)
+{
+    const float Sign = N.z >= 0.0 ? 1.0 : -1.0;
+    const float A = -1.0 / (Sign + N.z);
+    const float XY = N.x * N.y * A;
+    T = float3(1.0 + Sign * N.x * N.x * A, Sign * XY, -Sign * N.x);
+    B = float3(XY, Sign + N.y * N.y * A, -N.y);
+}
+
+float3 SampleGGXNormal(float3 N, float Roughness, float2 Xi)
+{
+    float3 T, B;
+    BuildBasis(N, T, B);
+    const float A = max(0.001, Roughness * Roughness);
+    const float Phi = 2.0 * PI * Xi.x;
+    const float CosTheta = sqrt((1.0 - Xi.y) / (1.0 + (A * A - 1.0) * Xi.y));
+    const float SinTheta = sqrt(saturate(1.0 - CosTheta * CosTheta));
+    return normalize(T * (SinTheta * cos(Phi)) + B * (SinTheta * sin(Phi)) + N * CosTheta);
+}
+
+float FresnelDielectric(float CosThetaI, float EtaI, float EtaT)
+{
+    CosThetaI = clamp(CosThetaI, -1.0, 1.0);
+    const float SinThetaT = EtaI / EtaT * sqrt(saturate(1.0 - CosThetaI * CosThetaI));
+    if (SinThetaT >= 1.0) return 1.0;
+    const float CosThetaT = sqrt(saturate(1.0 - SinThetaT * SinThetaT));
+    CosThetaI = abs(CosThetaI);
+    const float Rs = ((EtaT * CosThetaI) - (EtaI * CosThetaT)) / ((EtaT * CosThetaI) + (EtaI * CosThetaT));
+    const float Rp = ((EtaI * CosThetaI) - (EtaT * CosThetaT)) / ((EtaI * CosThetaI) + (EtaT * CosThetaT));
+    return 0.5 * (Rs * Rs + Rp * Rp);
+}
+
+float3 FresnelSchlick(float CosTheta, float3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - saturate(CosTheta), 5.0);
+}
+
+void GeneratePhoton(uint PhotonIndex, inout uint RNG, out float3 Origin, out float3 Direction, out float3 Power)
+{
+    const float2 Xi = LowDiscrepancy2D(PhotonIndex + BatchIndex * PhotonCount, RandomSeed);
+    if (LightType == 0u)
+    {
+        Origin = EmissionCenter + EmissionTangent * ((Xi.x * 2.0 - 1.0) * EmissionHalfExtent.x)
+            + EmissionBitangent * ((Xi.y * 2.0 - 1.0) * EmissionHalfExtent.y);
+        Direction = normalize(LightDirection);
+        if (LightSourceAngleRadians > 0.0)
+        {
+            float3 T, B;
+            BuildBasis(Direction, T, B);
+            const float2 Disk = UniformSampleDiskConcentric(float2(Random01(RNG), Random01(RNG)));
+            Direction = normalize(Direction + (T * Disk.x + B * Disk.y) * tan(LightSourceAngleRadians));
+        }
+        const float Area = max(1.0e-4, 4.0 * EmissionHalfExtent.x * EmissionHalfExtent.y);
+        Power = LightColor * LightIntensity * Area / max(1u, PhotonCount);
+    }
+    else
+    {
+        float3 Axis = normalize(CasterBoundsCenter - LightPosition);
+        float3 T, B;
+        BuildBasis(Axis, T, B);
+        const float Distance = max(0.01, length(CasterBoundsCenter - LightPosition));
+        const float SinMax = saturate(CasterBoundsRadius / Distance);
+        const float CosMax = sqrt(saturate(1.0 - SinMax * SinMax));
+        const float CosTheta = lerp(1.0, CosMax, Xi.x);
+        const float SinTheta = sqrt(saturate(1.0 - CosTheta * CosTheta));
+        const float Phi = 2.0 * PI * Xi.y;
+        Direction = normalize(Axis * CosTheta + T * (SinTheta * cos(Phi)) + B * (SinTheta * sin(Phi)));
+        Origin = LightPosition;
+        if (LightSourceRadius > 0.0)
+        {
+            const float2 Disk = UniformSampleDiskConcentric(float2(Random01(RNG), Random01(RNG))) * LightSourceRadius;
+            Origin += T * Disk.x + B * Disk.y;
+        }
+        const float SolidAngle = max(1.0e-6, 2.0 * PI * (1.0 - CosMax));
+        Power = LightColor * LightIntensity * SolidAngle / max(1u, PhotonCount);
+    }
+}
+
+float ComputeLocalLightAttenuation(float DistanceSquared)
+{
+    if (LightType == 0u) return 1.0;
+    const float Radius = max(0.01, LightAttenuationRadius);
+    const float NormalizedDistanceSquared = DistanceSquared / (Radius * Radius);
+    if (NormalizedDistanceSquared >= 1.0) return 0.0;
+    if (bInverseSquaredFalloff != 0u)
+    {
+        // Matches UE's inverse-squared local-light radius window. The inverse
+        // square itself is produced by the solid-angle photon distribution.
+        const float Window = saturate(1.0 - NormalizedDistanceSquared * NormalizedDistanceSquared);
+        return Window * Window;
+    }
+    // Photon density already contributes 1/r^2. Cancel that term before
+    // applying UE's legacy exponent falloff, as the path tracer does.
+    return DistanceSquared * pow(1.0 - saturate(NormalizedDistanceSquared), max(0.001, LightFalloffExponent));
+}
+
+RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
+{
+    const uint PhotonIndex = DispatchRaysIndex().x;
+    if (PhotonIndex >= PhotonCount) return;
+    FPhotonRecord Result;
+    Result.Position = 0.0;
+    Result.ReceiverId = 0xffffffffu;
+    Result.Power = 0.0;
+    Result.BinIndex = 0xffffffffu;
+
+    uint RNG = Hash32(PhotonIndex ^ RandomSeed ^ (BatchIndex * 0x9e3779b9u));
+    float3 Origin, Direction, Throughput;
+    GeneratePhoton(PhotonIndex, RNG, Origin, Direction, Throughput);
+
+    if (LightType == 2u)
+    {
+        const float SpotCos = dot(Direction, normalize(LightDirection));
+        if (SpotCos < SpotOuterCos)
+        {
+            PhotonRecords[PhotonIndex] = Result;
+            return;
+        }
+        const float SpotWeight = smoothstep(SpotOuterCos, max(SpotOuterCos + 1.0e-4, SpotInnerCos), SpotCos);
+        Throughput *= SpotWeight * SpotWeight;
+    }
+
+    bool InteractedWithCaster = false;
+    float MediumIOR[4] = { 1.0, 1.0, 1.0, 1.0 };
+    float3 MediumAbsorption[4] = {
+        float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0),
+        float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0) };
+    uint MediumDepth = 1;
+    float TraveledDistance = 0.0;
+
+    [loop]
+    for (uint Bounce = 0; Bounce < MaxBounces; ++Bounce)
+    {
+        FPackedMaterialClosestHitPayload Payload;
+        if (!TraceMaterial(Origin, Direction, 0.01, Payload)) break;
+
+        TraveledDistance += max(0.0, Payload.HitT);
+        Throughput *= exp(-MediumAbsorption[MediumDepth - 1] * max(0.0, Payload.HitT));
+        const float3 Position = Origin + Direction * Payload.HitT;
+        const uint PrimitiveId = GetPersistentPrimitiveId(Payload);
+        const int CasterIndex = FindCaster(PrimitiveId);
+
+        if (CasterIndex < 0)
+        {
+            const int ReceiverIndex = FindReceiver(PrimitiveId);
+            if (InteractedWithCaster && ReceiverIndex >= 0)
+            {
+                const float3 Local = TransformPosition(Position, WorldToRegion);
+                const float2 UV = float2(Local.y / RegionSize.y + 0.5, 0.5 - Local.z / RegionSize.z);
+                if (Local.x >= 0.0 && Local.x <= RegionSize.x && all(UV >= 0.0) && all(UV < 1.0))
+                {
+                    const uint2 Pixel = min((uint2)(UV * OutputResolution), OutputResolution - 1u);
+                    const uint GuidePrimitive = GuideId[Pixel];
+                    const float GuideDepth = Guide[Pixel].x;
+                    const float GuideDepthTolerance = max(0.5, RegionSize.x / OutputResolution * 2.0);
+                    if (GuidePrimitive == PrimitiveId && abs(Local.x - GuideDepth) <= GuideDepthTolerance)
+                    {
+                        Result.Position = Position;
+                        Result.ReceiverId = PrimitiveId;
+                        Result.Power = max(0.0, Throughput);
+                        const uint2 Bin = min(Pixel / 8u, uint2(BinGridWidth - 1u, BinGridHeight - 1u));
+                        Result.BinIndex = Bin.y * BinGridWidth + Bin.x;
+                    }
+                }
+            }
+            break;
+        }
+
+        if (!InteractedWithCaster && LightType != 0u)
+        {
+            Throughput *= ComputeLocalLightAttenuation(TraveledDistance * TraveledDistance);
+            if (max(Throughput.x, max(Throughput.y, Throughput.z)) <= 0.0) break;
+        }
+        InteractedWithCaster = true;
+        const FCausticsGpuCaster Caster = CasterConfigs[CasterIndex];
+        float3 Ng = normalize(Payload.GetGeometryNormal());
+        float3 N = normalize(Payload.GetWorldNormal());
+        const bool Entering = dot(Direction, Ng) < 0.0;
+        if (!Entering) { Ng = -Ng; N = -N; }
+        if (dot(N, Ng) < 0.0) N = -N;
+        uint OpticalMode = Caster.OpticalMode;
+        uint ThicknessMode = Caster.ThicknessMode;
+        float IOR = Caster.IOR;
+        float3 Tint = Caster.TintRoughness.xyz;
+        float Roughness = Caster.TintRoughness.w;
+#if SUBSTRATE_ENABLED
+#if SUBSTRATE_GBUFFER_FORMAT == 1
+        Roughness = max(0.001,
+            SubstrateUnpackTopLayerData(Payload.SubstrateData.PackedTopLayerData).Roughness);
+#else
+        Roughness = max(0.001, Payload.GetRoughness());
+#endif
+#else
+        Roughness = OpticalMode == 0u ? max(0.001, Payload.GetRoughness()) : max(0.001, Roughness);
+#endif
+        if (OpticalMode == 0u)
+        {
+            if (!ResolveAutoOptics(Payload, OpticalMode, ThicknessMode, IOR, Roughness, Tint))
+            {
+                break;
+            }
+        }
+
+        const float3 M = SampleGGXNormal(N, Roughness, float2(Random01(RNG), Random01(RNG)));
+
+        if (OpticalMode == 2u)
+        {
+            const float3 F = FresnelSchlick(abs(dot(-Direction, M)), saturate(Tint));
+            Throughput *= F;
+            Direction = reflect(Direction, M);
+            Origin = Position + Ng * 0.02;
+        }
+        else
+        {
+            const float EtaI = MediumIOR[MediumDepth - 1];
+            const float EtaT = Entering ? IOR : (MediumDepth > 1 ? MediumIOR[MediumDepth - 2] : 1.0);
+            const float F = FresnelDielectric(abs(dot(-Direction, M)), EtaI, EtaT);
+            if (Random01(RNG) < F)
+            {
+                Direction = reflect(Direction, M);
+                Origin = Position + Ng * 0.02;
+            }
+            else
+            {
+                const float3 Refracted = refract(Direction, M, EtaI / EtaT);
+                if (dot(Refracted, Refracted) < 1.0e-8)
+                {
+                    Direction = reflect(Direction, M);
+                    Origin = Position + Ng * 0.02;
+                }
+                else
+                {
+                    Direction = normalize(Refracted);
+                    Throughput *= max(0.0, Tint);
+                    if (ThicknessMode == 1u && Entering)
+                    {
+                        Throughput *= exp(-Caster.AbsorptionThickness.xyz * Caster.AbsorptionThickness.w);
+                    }
+                    else if (Entering && MediumDepth < 4u)
+                    {
+                        MediumIOR[MediumDepth] = IOR;
+                        MediumAbsorption[MediumDepth] = Caster.AbsorptionThickness.xyz;
+                        MediumDepth++;
+                    }
+                    else if (!Entering && MediumDepth > 1u)
+                    {
+                        MediumDepth--;
+                    }
+                    Origin = Position - Ng * 0.02;
+                }
+            }
+        }
+
+        if (Bounce >= 2u)
+        {
+            const float Survival = clamp(max(Throughput.x, max(Throughput.y, Throughput.z)), 0.05, 0.95);
+            if (Random01(RNG) > Survival) break;
+            Throughput /= Survival;
+        }
+        if (!all(isfinite(Throughput)) || max(Throughput.x, max(Throughput.y, Throughput.z)) <= 0.0) break;
+    }
+
+    PhotonRecords[PhotonIndex] = Result;
+}

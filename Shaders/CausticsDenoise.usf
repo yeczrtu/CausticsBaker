@@ -1,0 +1,62 @@
+#include "/Engine/Private/Common.ush"
+
+Texture2D<float4> InputTexture;
+Texture2D<float4> Guide;
+Texture2D<uint> GuideId;
+Texture2D<float> GuideCoverage;
+Texture2D<float4> SPPMStats;
+RWTexture2D<float4> OutputTexture;
+uint OutputResolution;
+uint StepWidth;
+float FilterStrength;
+
+static const float Kernel[5] = { 1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0 };
+
+[numthreads(8, 8, 1)]
+void AtrousCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    const uint2 Pixel = DispatchId.xy;
+    if (any(Pixel >= OutputResolution)) return;
+    const uint CenterId = GuideId.Load(int3(Pixel, 0));
+    const float4 CenterColor = InputTexture.Load(int3(Pixel, 0));
+    const float CenterCoverage = GuideCoverage.Load(int3(Pixel, 0));
+    if (CenterId == 0xffffffffu)
+    {
+        OutputTexture[Pixel] = 0.0;
+        return;
+    }
+    const float4 CenterGuide = Guide.Load(int3(Pixel, 0));
+    const float3 CenterNormal = normalize(CenterGuide.yzw);
+    const float CenterDepth = CenterGuide.x;
+    const float Variance = SPPMStats.Load(int3(Pixel, 0)).w / max(1.0, SPPMStats.Load(int3(Pixel, 0)).x - 1.0);
+
+    float3 Sum = 0.0;
+    float WeightSum = 0.0;
+    [unroll]
+    for (int Y = -2; Y <= 2; ++Y)
+    {
+        [unroll]
+        for (int X = -2; X <= 2; ++X)
+        {
+            const int2 Q = clamp(int2(Pixel) + int2(X, Y) * (int)StepWidth, 0, (int)OutputResolution - 1);
+            if (GuideId.Load(int3(Q, 0)) != CenterId) continue;
+            const float QCoverage = GuideCoverage.Load(int3(Q, 0));
+            if (QCoverage <= 0.0 || abs(QCoverage - CenterCoverage) > 0.51) continue;
+            const float4 QGuide = Guide.Load(int3(Q, 0));
+            const float3 QNormal = normalize(QGuide.yzw);
+            const float NormalWeight = pow(saturate(dot(CenterNormal, QNormal)), 32.0 * max(0.25, FilterStrength));
+            const int2 QX = int2(min(Pixel.x + 1u, OutputResolution - 1u), Pixel.y);
+            const int2 QY = int2(Pixel.x, min(Pixel.y + 1u, OutputResolution - 1u));
+            const float LocalDepthRange = abs(Guide.Load(int3(QX, 0)).x - CenterDepth) + abs(Guide.Load(int3(QY, 0)).x - CenterDepth);
+            const float DepthSigma = max(0.01, LocalDepthRange + 0.1 * StepWidth);
+            const float DepthWeight = exp(-abs(QGuide.x - CenterDepth) / (DepthSigma * max(0.25, FilterStrength)));
+            const float3 QColor = InputTexture.Load(int3(Q, 0)).rgb;
+            const float ColorDelta = abs(dot(QColor - CenterColor.rgb, float3(0.2126, 0.7152, 0.0722)));
+            const float ColorWeight = exp(-ColorDelta / max(1.0e-4, sqrt(max(0.0, Variance)) * FilterStrength + 0.01));
+            const float W = Kernel[X + 2] * Kernel[Y + 2] * NormalWeight * DepthWeight * ColorWeight;
+            Sum += QColor * W;
+            WeightSum += W;
+        }
+    }
+    OutputTexture[Pixel] = float4(Sum / max(1.0e-6, WeightSum), CenterCoverage);
+}

@@ -1,0 +1,47 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D CausticsTexture;
+Texture2D<float4> Guide;
+Texture2D<uint> GuideId;
+Texture2D<float> GuideCoverage;
+Texture2D SceneDepthTexture;
+SamplerState BilinearClampSampler;
+float4x4 WorldToRegion;
+float3 RegionSize;
+uint BakeResolution;
+uint DebugDisplay;
+
+float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
+{
+    const uint2 ScenePixel = uint2(SvPosition.xy);
+    const float DeviceZ = SceneDepthTexture.Load(int3(ScenePixel, 0)).r;
+    if (DeviceZ <= 0.0) return 0.0;
+    const float3 WorldPosition = DFHackToFloat(SvPositionToWorld(float4(SvPosition.xy, DeviceZ, 1.0)));
+    const float3 Local = mul(float4(WorldPosition, 1.0), WorldToRegion).xyz;
+    if (Local.x < 0.0 || Local.x > RegionSize.x || abs(Local.y) > RegionSize.y * 0.5 || abs(Local.z) > RegionSize.z * 0.5)
+    {
+        return 0.0;
+    }
+    const float2 BakeUV = float2(Local.y / RegionSize.y + 0.5, 0.5 - Local.z / RegionSize.z);
+    const uint2 BakePixel = min((uint2)(saturate(BakeUV) * BakeResolution), BakeResolution - 1u);
+    const uint ReceiverId = GuideId.Load(int3(BakePixel, 0));
+    if (ReceiverId == 0xffffffffu) return 0.0;
+    const float4 G = Guide.Load(int3(BakePixel, 0));
+    const float DepthTolerance = max(0.5, RegionSize.x / BakeResolution * 2.0);
+    if (abs(Local.x - G.x) > DepthTolerance) return 0.0;
+
+    if (DebugDisplay == 4u) return float4(G.xxx / max(1.0, RegionSize.x), 1.0);
+    if (DebugDisplay == 5u) return float4(G.yzw * 0.5 + 0.5, 1.0);
+    if (DebugDisplay == 6u)
+    {
+        const float Coverage = GuideCoverage.Load(int3(BakePixel, 0));
+        return float4(Coverage.xxx, 1.0);
+    }
+    if (DebugDisplay == 7u)
+    {
+        const float H = frac(ReceiverId * 0.61803398875);
+        return float4(frac(H + float3(0.0, 0.333, 0.667)), 1.0);
+    }
+    return CausticsTexture.SampleLevel(BilinearClampSampler, BakeUV, 0);
+}

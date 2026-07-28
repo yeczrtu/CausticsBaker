@@ -1,0 +1,173 @@
+#include "/Engine/Private/Common.ush"
+
+struct FPhotonRecord
+{
+    float3 Position;
+    uint ReceiverId;
+    float3 Power;
+    uint BinIndex;
+};
+
+StructuredBuffer<FPhotonRecord> PhotonRecords;
+StructuredBuffer<uint> BinCounts;
+StructuredBuffer<uint> BinOffsets;
+StructuredBuffer<uint> PhotonIndices;
+RWStructuredBuffer<uint> RWBinCounts;
+RWStructuredBuffer<uint> RWBinOffsets;
+RWStructuredBuffer<uint> BinCursors;
+RWStructuredBuffer<uint> RWPhotonIndices;
+
+Texture2D<float4> Guide;
+Texture2D<uint> GuideId;
+Texture2D<float> GuideCoverage;
+RWTexture2D<float4> PhotonRaw;
+RWTexture2D<float4> SPPMTau;
+RWTexture2D<float4> SPPMStats;
+RWTexture2D<float4> DensityOutput;
+
+uint PhotonCount;
+uint BinCount;
+uint BinGridWidth;
+uint BinGridHeight;
+uint OutputResolution;
+uint BatchIndex;
+uint BatchCount;
+float SPPMAlpha;
+float InitialRadiusWorld;
+float ProjectionTexelWorldSize;
+float4x4 RegionToWorld;
+float3 RegionSize;
+
+float3 ReconstructGuidePosition(uint2 Pixel, float Depth)
+{
+    const float2 UV = (float2(Pixel) + 0.5) / OutputResolution;
+    const float3 Local = float3(Depth, (UV.x - 0.5) * RegionSize.y, (0.5 - UV.y) * RegionSize.z);
+    return mul(float4(Local, 1.0), RegionToWorld).xyz;
+}
+
+[numthreads(256, 1, 1)]
+void CountPhotonsCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    const uint Index = DispatchId.x;
+    if (Index >= PhotonCount) return;
+    const uint Bin = PhotonRecords[Index].BinIndex;
+    if (Bin < BinCount)
+    {
+        InterlockedAdd(RWBinCounts[Bin], 1u);
+    }
+}
+
+[numthreads(1, 1, 1)]
+void PrefixScanCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    uint Sum = 0;
+    for (uint Bin = 0; Bin < BinCount; ++Bin)
+    {
+        RWBinOffsets[Bin] = Sum;
+        Sum += BinCounts[Bin];
+    }
+}
+
+[numthreads(256, 1, 1)]
+void ScatterPhotonsCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    const uint Index = DispatchId.x;
+    if (Index >= PhotonCount) return;
+    const uint Bin = PhotonRecords[Index].BinIndex;
+    if (Bin < BinCount)
+    {
+        uint LocalOffset;
+        InterlockedAdd(BinCursors[Bin], 1u, LocalOffset);
+        RWPhotonIndices[BinOffsets[Bin] + LocalOffset] = Index;
+    }
+}
+
+[numthreads(8, 8, 1)]
+void DensityEstimateCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    const uint2 Pixel = DispatchId.xy;
+    if (any(Pixel >= OutputResolution)) return;
+    const uint ReceiverId = GuideId.Load(int3(Pixel, 0));
+    if (ReceiverId == 0xffffffffu)
+    {
+        PhotonRaw[Pixel] = 0.0;
+        SPPMTau[Pixel] = 0.0;
+        SPPMStats[Pixel] = 0.0;
+        return;
+    }
+
+    const float4 GuideValue = Guide.Load(int3(Pixel, 0));
+    const float3 Center = ReconstructGuidePosition(Pixel, GuideValue.x);
+    const float3 Normal = normalize(GuideValue.yzw);
+    const float4 OldStats = SPPMStats[Pixel];
+    const float OldN = BatchIndex == 0u ? 0.0 : OldStats.x;
+    const float OldRadius = BatchIndex == 0u ? InitialRadiusWorld : max(1.0e-4, OldStats.y);
+    const float Radius2 = OldRadius * OldRadius;
+    const int2 CenterBin = int2(Pixel / 8u);
+    const int BinRadius = max(1, (int)ceil(OldRadius / max(1.0e-4, ProjectionTexelWorldSize * 8.0)));
+
+    float3 Phi = 0.0;
+    float M = 0.0;
+    [loop]
+    for (int BY = -BinRadius; BY <= BinRadius; ++BY)
+    {
+        [loop]
+        for (int BX = -BinRadius; BX <= BinRadius; ++BX)
+        {
+            const int2 BinCoord = CenterBin + int2(BX, BY);
+            if (any(BinCoord < 0) || BinCoord.x >= (int)BinGridWidth || BinCoord.y >= (int)BinGridHeight) continue;
+            const uint Bin = BinCoord.y * BinGridWidth + BinCoord.x;
+            const uint Offset = BinOffsets[Bin];
+            const uint Count = BinCounts[Bin];
+            [loop]
+            for (uint I = 0; I < Count; ++I)
+            {
+                const FPhotonRecord Photon = PhotonRecords[PhotonIndices[Offset + I]];
+                if (Photon.ReceiverId != ReceiverId) continue;
+                const float3 Delta = Photon.Position - Center;
+                const float PlaneDistance = dot(Delta, Normal);
+                const float TangentDistance2 = max(0.0, dot(Delta, Delta) - PlaneDistance * PlaneDistance);
+                if (TangentDistance2 <= Radius2 && abs(PlaneDistance) <= OldRadius * 0.2)
+                {
+                    const float Kernel = max(0.0, 1.0 - sqrt(TangentDistance2) / OldRadius);
+                    Phi += Photon.Power * Kernel * 3.0; // normalized 2D cone kernel
+                    M += Kernel;
+                }
+            }
+        }
+    }
+
+    const float NewN = OldN + SPPMAlpha * M;
+    const float Ratio = M > 0.0 ? (OldN + SPPMAlpha * M) / max(1.0e-5, OldN + M) : 1.0;
+    const float NewRadius = OldRadius * sqrt(max(0.0, Ratio));
+    const float RadiusScale = (NewRadius * NewRadius) / max(1.0e-8, Radius2);
+    const float3 OldTau = BatchIndex == 0u ? 0.0 : SPPMTau[Pixel].rgb;
+    const float3 NewTau = (OldTau + Phi) * RadiusScale;
+    const float3 Raw = Phi / max(1.0e-6, PI * Radius2);
+    const float Luminance = dot(Raw, float3(0.2126, 0.7152, 0.0722));
+    const float OldMean = BatchIndex == 0u ? 0.0 : OldStats.z;
+    const float OldM2 = BatchIndex == 0u ? 0.0 : OldStats.w;
+    const float DeltaL = Luminance - OldMean;
+    const float Mean = OldMean + DeltaL / (BatchIndex + 1.0);
+    const float Moment2 = OldM2 + DeltaL * (Luminance - Mean);
+
+    const float Coverage = GuideCoverage.Load(int3(Pixel, 0));
+    PhotonRaw[Pixel] = float4(Raw, Coverage);
+    SPPMTau[Pixel] = float4(NewTau, Coverage);
+    SPPMStats[Pixel] = float4(NewN, NewRadius, Mean, Moment2);
+}
+
+[numthreads(8, 8, 1)]
+void FinalizeDensityCS(uint3 DispatchId : SV_DispatchThreadID)
+{
+    const uint2 Pixel = DispatchId.xy;
+    if (any(Pixel >= OutputResolution)) return;
+    if (GuideId.Load(int3(Pixel, 0)) == 0xffffffffu)
+    {
+        DensityOutput[Pixel] = 0.0;
+        return;
+    }
+    const float Radius = max(1.0e-4, SPPMStats[Pixel].y);
+    const float3 Irradiance = SPPMTau[Pixel].rgb / max(1.0e-6, PI * Radius * Radius * BatchCount);
+    DensityOutput[Pixel] = float4(max(0.0, Irradiance), GuideCoverage.Load(int3(Pixel, 0)));
+}
