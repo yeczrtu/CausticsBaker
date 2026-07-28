@@ -175,7 +175,6 @@ bool TraceMaterial(float3 Origin, float3 Direction, float MinT, out FPackedMater
 bool ResolveAutoOptics(
     FPackedMaterialClosestHitPayload Payload,
     inout uint OpticalMode,
-    inout uint ThicknessMode,
     inout float IOR,
     inout float Roughness,
     inout float3 Tint)
@@ -218,10 +217,10 @@ bool ResolveAutoOptics(
     Tint = max(MaterialTransmittance.x, max(MaterialTransmittance.y, MaterialTransmittance.z)) > 1.0e-4
         ? MaterialTransmittance
         : float3(1.0, 1.0, 1.0);
-    if (BSDFType == SUBSTRATE_BSDF_TYPE_SLAB && BSDF_GETISTHIN(SurfaceBSDF) != 0u)
-    {
-        ThicknessMode = 1u;
-    }
+    // ThicknessMode is an explicit caster setting.  A visually thin
+    // translucent material is often applied to a closed glass mesh, so the
+    // material's Thin Surface bit must not silently turn that mesh into a
+    // single-interface optical sheet.
     return true;
 #else
     Roughness = max(0.001, Payload.GetRoughness());
@@ -527,20 +526,13 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
         uint ThicknessMode = Caster.ThicknessMode;
         float IOR = Caster.IOR;
         float3 Tint = Caster.TintRoughness.xyz;
-        float Roughness = Caster.TintRoughness.w;
-#if SUBSTRATE_ENABLED
-#if SUBSTRATE_GBUFFER_FORMAT == 1
-        Roughness = max(0.001,
-            SubstrateUnpackTopLayerData(Payload.SubstrateData.PackedTopLayerData).Roughness);
-#else
-        Roughness = max(0.001, Payload.GetRoughness());
-#endif
-#else
-        Roughness = OpticalMode == 0u ? max(0.001, Payload.GetRoughness()) : max(0.001, Roughness);
-#endif
+        float Roughness = max(0.001, Caster.TintRoughness.w);
         if (OpticalMode == 0u)
         {
-            if (!ResolveAutoOptics(Payload, OpticalMode, ThicknessMode, IOR, Roughness, Tint))
+            // Auto mode reads the simplified material top surface.  Explicit
+            // dielectric/conductor modes intentionally retain every optical
+            // override above; only the material shading normal is shared.
+            if (!ResolveAutoOptics(Payload, OpticalMode, IOR, Roughness, Tint))
             {
                 break;
             }

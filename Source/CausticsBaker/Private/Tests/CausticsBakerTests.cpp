@@ -106,6 +106,14 @@ namespace
                         bool bRadianceIsFinite = true;
                         float MaxRadiance = 0.0f;
                         double TotalRadiance = 0.0;
+                        double TotalLuminance = 0.0;
+                        double FocusLuminance = 0.0;
+                        double WeightedX = 0.0;
+                        double WeightedY = 0.0;
+                        float MaxLuminance = 0.0f;
+                        FIntPoint MaxLuminancePixel = FIntPoint::ZeroValue;
+                        TArray<float> LuminancePixels;
+                        LuminancePixels.SetNumZeroed(256 * 256);
                         if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
                         {
                             const FFloat16Color* Pixels = reinterpret_cast<const FFloat16Color*>(MipData);
@@ -119,6 +127,22 @@ namespace
                                 {
                                     MaxRadiance = FMath::Max(MaxRadiance, FMath::Max3(R, G, B));
                                     TotalRadiance += FMath::Max(0.0f, R) + FMath::Max(0.0f, G) + FMath::Max(0.0f, B);
+                                    const double Luminance = FMath::Max(0.0f, 0.2126f * R + 0.7152f * G + 0.0722f * B);
+                                    LuminancePixels[Index] = static_cast<float>(Luminance);
+                                    TotalLuminance += Luminance;
+                                    const int32 X = Index % 256;
+                                    const int32 Y = Index / 256;
+                                    WeightedX += X * Luminance;
+                                    WeightedY += Y * Luminance;
+                                    if (Luminance > MaxLuminance)
+                                    {
+                                        MaxLuminance = static_cast<float>(Luminance);
+                                        MaxLuminancePixel = FIntPoint(X, Y);
+                                    }
+                                    if (FMath::Square(X - 127.5f) + FMath::Square(Y - 127.5f) <= FMath::Square(8.0f))
+                                    {
+                                        FocusLuminance += Luminance;
+                                    }
                                 }
                                 if (Pixels[Index].A.GetFloat() > 0.0f)
                                 {
@@ -131,6 +155,29 @@ namespace
                         Test->TestTrue(TEXT("GPU caustics radiance is finite"), bRadianceIsFinite);
                         Test->TestTrue(TEXT("GPU photon mapping produced nonzero caustics radiance"),
                             MaxRadiance > 1.0e-8f && TotalRadiance > 1.0e-6);
+                        const double FocusFraction = TotalLuminance > 0.0 ? FocusLuminance / TotalLuminance : 0.0;
+                        double PeakNeighborhoodLuminance = 0.0;
+                        for (int32 Y = FMath::Max(0, MaxLuminancePixel.Y - 8); Y <= FMath::Min(255, MaxLuminancePixel.Y + 8); ++Y)
+                        {
+                            for (int32 X = FMath::Max(0, MaxLuminancePixel.X - 8); X <= FMath::Min(255, MaxLuminancePixel.X + 8); ++X)
+                            {
+                                if (FMath::Square(X - MaxLuminancePixel.X) + FMath::Square(Y - MaxLuminancePixel.Y) <= FMath::Square(8))
+                                {
+                                    PeakNeighborhoodLuminance += LuminancePixels[Y * 256 + X];
+                                }
+                            }
+                        }
+                        const double PeakNeighborhoodFraction = TotalLuminance > 0.0
+                            ? PeakNeighborhoodLuminance / TotalLuminance : 0.0;
+                        const FVector2D LuminanceCentroid = TotalLuminance > 0.0
+                            ? FVector2D(WeightedX / TotalLuminance, WeightedY / TotalLuminance)
+                            : FVector2D::ZeroVector;
+                        Test->AddInfo(FString::Printf(
+                            TEXT("Polished glass: center8=%.6f, peak8=%.6f, peak=(%d,%d), centroid=(%.2f,%.2f), max=%.6g, total=%.6g"),
+                            FocusFraction, PeakNeighborhoodFraction, MaxLuminancePixel.X, MaxLuminancePixel.Y,
+                            LuminanceCentroid.X, LuminanceCentroid.Y, MaxLuminance, TotalLuminance));
+                        Test->TestTrue(TEXT("Polished solid glass concentrates photons near its optical focus"),
+                            PeakNeighborhoodFraction >= 0.2);
                     }
                 }
                 Cleanup();
@@ -342,7 +389,9 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     AStaticMeshActor* CasterActor = World->SpawnActor<AStaticMeshActor>(
         RegionTransform.TransformPosition(FVector(150.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     AStaticMeshActor* ReceiverActor = World->SpawnActor<AStaticMeshActor>(
-        RegionTransform.TransformPosition(FVector(350.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
+        // The engine sphere has a 50 cm radius.  For IOR 1.5 its paraxial
+        // back focal length is approximately 25 cm beyond the rear surface.
+        RegionTransform.TransformPosition(FVector(230.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ADirectionalLight* LightActor = World->SpawnActor<ADirectionalLight>(
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ACausticsBakeRegion* Region = World->SpawnActor<ACausticsBakeRegion>(
@@ -374,23 +423,23 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
 
     FCausticsCasterEntry CasterEntry;
     CasterEntry.Component.OverrideComponent = CasterComponent;
-    // Exercise Substrate's simplified top-surface material payload. Legacy
-    // material projects retain the explicit dielectric smoke-test path.
-    CasterEntry.OpticalMode = Substrate::IsSubstrateEnabled()
-        ? ECausticsOpticalMode::AutoFromMaterial
-        : ECausticsOpticalMode::DielectricOverride;
+    // Exercise the deterministic explicit glass path.  In particular this
+    // verifies that Substrate projects do not replace the requested optical
+    // roughness or closed-volume setting with material top-surface values.
+    CasterEntry.OpticalMode = ECausticsOpticalMode::DielectricOverride;
     CasterEntry.ThicknessMode = ECausticsThicknessMode::Solid;
     CasterEntry.IndexOfRefraction = 1.5f;
-    CasterEntry.Roughness = 0.01f;
+    CasterEntry.Roughness = 0.001f;
     Region->Casters.Add(CasterEntry);
 
     Region->Settings.Preset = ECausticsQualityPreset::Custom;
     Region->Settings.Resolution = 256;
-    Region->Settings.PhotonBatches = 1;
-    Region->Settings.PhotonsPerBatch = 1024;
+    Region->Settings.PhotonBatches = 4;
+    Region->Settings.PhotonsPerBatch = 16384;
     Region->Settings.MaxBounces = 4;
-    Region->Settings.AtrousIterations = 1;
-    Region->Settings.Denoiser = ECausticsDenoiser::Atrous;
+    Region->Settings.AtrousIterations = 0;
+    Region->Settings.InitialRadiusTexels = 1.0f;
+    Region->Settings.Denoiser = ECausticsDenoiser::None;
     Region->OutputDirectory.Path = TEXT("/Game/__CausticsBakerTests");
     Region->OutputTextureName = FString::Printf(TEXT("T_GpuSmoke_%u"), Region->GetUniqueID());
 
@@ -424,7 +473,7 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         World->DestroyActor(LightActor, true);
         return false;
     }
-    TestTrue(TEXT("Filtered receiver beyond Depth is auto-fitted before rendering"), Region->Depth > 350.0f);
+    TestTrue(TEXT("Filtered receiver beyond Depth is auto-fitted before rendering"), Region->Depth > 230.0f);
 
     TArray<TWeakObjectPtr<AActor>> Actors;
     Actors.Add(Region);

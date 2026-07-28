@@ -9,16 +9,16 @@ class UPrimitiveComponent;
 UENUM(BlueprintType)
 enum class ECausticsOpticalMode : uint8
 {
-    AutoFromMaterial UMETA(DisplayName = "Auto from Material (Top Surface)", ToolTip = "Uses the material hit payload. With Substrate, only the ray-tracing payload's simplified top surface is used; lower layers are ignored."),
-    DielectricOverride UMETA(DisplayName = "Dielectric Override"),
-    ConductorOverride UMETA(DisplayName = "Conductor Override")
+    AutoFromMaterial UMETA(DisplayName = "Auto from Material (Top Surface)", ToolTip = "Reads optical type, IOR/F0, roughness, tint, and normal from the ray-tracing payload's simplified top surface. Solid/Thin remains the explicit caster setting."),
+    DielectricOverride UMETA(DisplayName = "Dielectric Override (Glass)", ToolTip = "Uses the explicit IOR, roughness, tint, absorption, and Solid/Thin settings below. Only the shading normal comes from the material."),
+    ConductorOverride UMETA(DisplayName = "Conductor Override (Metal)", ToolTip = "Uses the explicit roughness and F0 tint below. Only the shading normal comes from the material.")
 };
 
 UENUM(BlueprintType)
 enum class ECausticsThicknessMode : uint8
 {
-    Solid,
-    Thin
+    Solid UMETA(DisplayName = "Solid (Closed Mesh)", ToolTip = "Trace both entry and exit interfaces and maintain a dielectric medium. Use for glass spheres and other watertight volumes."),
+    Thin UMETA(DisplayName = "Thin (Single Surface)", ToolTip = "Treat the caster as a single optical sheet with the specified effective thickness. Do not use for a closed glass sphere.")
 };
 
 UENUM(BlueprintType)
@@ -76,16 +76,16 @@ struct CAUSTICSBAKER_API FCausticsCasterEntry
     UPROPERTY(EditAnywhere, Category = "Optics")
     ECausticsOpticalMode OpticalMode = ECausticsOpticalMode::AutoFromMaterial;
 
-    UPROPERTY(EditAnywhere, Category = "Optics")
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ToolTip = "Solid traces a closed volume through entry and exit surfaces. Thin is for an open or single-surface sheet."))
     ECausticsThicknessMode ThicknessMode = ECausticsThicknessMode::Solid;
 
-    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "1.0", ClampMax = "4.0", UIMin = "1.0", UIMax = "2.5"))
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "1.0", ClampMax = "4.0", UIMin = "1.0", UIMax = "2.5", EditCondition = "OpticalMode == ECausticsOpticalMode::DielectricOverride", EditConditionHides, ToolTip = "Index of refraction used by Dielectric Override. Typical glass is approximately 1.5."))
     float IndexOfRefraction = 1.5f;
 
-    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.001", ClampMax = "1.0", EditCondition = "OpticalMode != ECausticsOpticalMode::AutoFromMaterial", EditConditionHides, ToolTip = "Microfacet roughness used by explicit Glass/Metal modes. Use 0.001 for a sharp polished caustic."))
     float Roughness = 0.02f;
 
-    UPROPERTY(EditAnywhere, Category = "Optics", meta = (DisplayName = "Optical Tint / F0"))
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (DisplayName = "Optical Tint / F0", EditCondition = "OpticalMode != ECausticsOpticalMode::AutoFromMaterial", EditConditionHides, ToolTip = "Transmission tint for Glass or specular F0 color for Metal."))
     FLinearColor Tint = FLinearColor::White;
 
     UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.0", DisplayName = "Absorption (1/cm)"))
