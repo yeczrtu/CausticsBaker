@@ -17,6 +17,8 @@ UE 5.8 Editor 上で、明示した Caster からフォトンを追跡し、投�
 4. `Light Actor` で Directional / Point / Spot Light を1つ選び、Caster の StaticMesh / ISM / HISM component を指定します。
 5. `Preview` でビューポート加算表示を確認し、`Bake` で `/Game/Caustics/T_Caustics_<ActorName>`（既定）へ RGBA16F Texture2D を作成します。
 
+`Caustics Quality & Actions` の `Preset` を `Custom (Preview and Bake)` にすると、`Photon Batches` と `Photons Per Batch` を変更できます。総フォトン数は両者の積です。Custom値はPreviewとBakeの両方に適用され、同じセクションの `Effective Preview / Effective Bake` に実際の総フォトン数と解像度が表示されます。標準Previewは `8 × 131,072 = 1,048,576`、標準Bakeは `32 × 524,288 = 16,777,216` フォトンです。
+
 `Receiver Filter (Optional)` は空のままで構いません。空の場合は投影ボックスと交差する ray-tracing-visible な StaticMesh / ISM / HISM が自動的に Receiver になり、投影方向の最前面へデカールのように投影されます。特定メッシュだけへ限定したい場合に限り、Receiver Filterへコンポーネントを追加します。Casterは自動Receiverから除外されます。
 
 明示した Receiver が現在の `Depth` より先にあっても、`Auto Fit Depth To Receiver Filter`（既定で有効）が `+X` 方向かつ `Width / Height` 内の Receiver まで Depth を自動拡張します。Preview は GPU readback で Receiver coverage を検証してから永続表示へ切り替わり、次の Preview、`Clear Preview`、またはレベル切替まで保持されます。

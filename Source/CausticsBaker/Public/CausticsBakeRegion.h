@@ -63,7 +63,7 @@ public:
     UPROPERTY(EditInstanceOnly, Category = "Scene", meta = (UseComponentPicker, DisplayName = "Receiver Filter (Optional)", ToolTip = "Leave empty to project automatically onto every supported ray-tracing-visible mesh intersecting the box. Add entries only to restrict receiving surfaces."))
     TArray<FComponentReference> Receivers;
 
-    UPROPERTY(EditAnywhere, Category = "Bake")
+    UPROPERTY(EditAnywhere, Category = "Bake", meta = (DisplayName = "Quality Settings"))
     FCausticsBakeSettings Settings;
 
     UPROPERTY(EditAnywhere, Category = "Output")

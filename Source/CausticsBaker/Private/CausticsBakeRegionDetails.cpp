@@ -6,6 +6,7 @@
 #include "DetailWidgetRow.h"
 #include "Editor.h"
 #include "IDetailCustomization.h"
+#include "PropertyHandle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Notifications/SProgressBar.h"
@@ -24,8 +25,17 @@ public:
         Region = Cast<ACausticsBakeRegion>(Objects[0].Get());
         if (!Region.IsValid()) return;
 
-        IDetailCategoryBuilder& Scene = DetailBuilder.EditCategory(TEXT("Scene"));
-        Scene.AddCustomRow(LOCTEXT("ReceiverModeFilter", "Receiver automatic projection filter"))
+        DetailBuilder.HideCategory(TEXT("Scene"));
+        DetailBuilder.HideCategory(TEXT("Bake"));
+        DetailBuilder.HideCategory(TEXT("Status"));
+
+        IDetailCategoryBuilder& Setup = DetailBuilder.EditCategory(TEXT("Caustics Setup"),
+            LOCTEXT("SetupCategory", "Caustics Setup"), ECategoryPriority::Important);
+        MoveProperty(DetailBuilder, Setup, GET_MEMBER_NAME_CHECKED(ACausticsBakeRegion, LightActor));
+        MoveProperty(DetailBuilder, Setup, GET_MEMBER_NAME_CHECKED(ACausticsBakeRegion, Casters));
+        MoveProperty(DetailBuilder, Setup, GET_MEMBER_NAME_CHECKED(ACausticsBakeRegion, Receivers));
+
+        Setup.AddCustomRow(LOCTEXT("ReceiverModeFilter", "Receiver automatic projection filter"))
         .WholeRowContent()
         [
             SNew(STextBlock)
@@ -40,9 +50,29 @@ public:
             })
         ];
 
-        IDetailCategoryBuilder& Actions = DetailBuilder.EditCategory(TEXT("Caustics Actions"),
-            LOCTEXT("Actions", "Caustics Actions"), ECategoryPriority::Important);
-        Actions.AddCustomRow(LOCTEXT("ButtonsFilter", "Preview Bake Cancel Clear Open"))
+        IDetailCategoryBuilder& Quality = DetailBuilder.EditCategory(TEXT("Caustics Quality and Actions"),
+            LOCTEXT("QualityActionsCategory", "Caustics Quality & Actions"), ECategoryPriority::TypeSpecific);
+
+        const TSharedRef<IPropertyHandle> Settings = DetailBuilder.GetProperty(
+            GET_MEMBER_NAME_CHECKED(ACausticsBakeRegion, Settings));
+        DetailBuilder.HideProperty(Settings);
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, Preset));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, Resolution));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, PhotonBatches));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, PhotonsPerBatch));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, MaxBounces));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, AtrousIterations));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, RandomSeed));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, SPPMConvergence));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, InitialRadiusTexels));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, FilterStrength));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, Denoiser));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, DebugDisplay));
+
+        AddEffectiveQualityRow(Quality, true, LOCTEXT("EffectivePreview", "Effective Preview"));
+        AddEffectiveQualityRow(Quality, false, LOCTEXT("EffectiveBake", "Effective Bake"));
+
+        Quality.AddCustomRow(LOCTEXT("ButtonsFilter", "Preview Bake Cancel Clear Open"))
         .WholeRowContent()
         [
             SNew(SGridPanel)
@@ -68,7 +98,7 @@ public:
             ]
         ];
 
-        Actions.AddCustomRow(LOCTEXT("ProgressFilter", "Progress Status"))
+        Quality.AddCustomRow(LOCTEXT("ProgressFilter", "Progress Status"))
         .NameContent()[SNew(STextBlock).Text(LOCTEXT("Progress", "Progress"))]
         .ValueContent().MinDesiredWidth(300.0f)
         [
@@ -80,7 +110,7 @@ public:
             })
         ];
 
-        Actions.AddCustomRow(LOCTEXT("MessageFilter", "Message Error"))
+        Quality.AddCustomRow(LOCTEXT("MessageFilter", "Message Error"))
         .WholeRowContent()
         [
             SNew(STextBlock)
@@ -91,7 +121,7 @@ public:
             })
         ];
 
-        Actions.AddCustomRow(LOCTEXT("FreshnessFilter", "Out of Date Signature"))
+        Quality.AddCustomRow(LOCTEXT("FreshnessFilter", "Out of Date Signature"))
         .WholeRowContent()
         [
             SNew(STextBlock)
@@ -114,15 +144,105 @@ public:
     }
 
 private:
+    static void MoveProperty(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& Destination,
+        const FName PropertyName)
+    {
+        const TSharedRef<IPropertyHandle> Property = DetailBuilder.GetProperty(PropertyName);
+        if (Property->IsValidHandle())
+        {
+            DetailBuilder.HideProperty(Property);
+            Destination.AddProperty(Property);
+        }
+    }
+
+    static void AddSettingProperty(IDetailCategoryBuilder& Destination,
+        const TSharedRef<IPropertyHandle>& Settings, const FName PropertyName)
+    {
+        const TSharedPtr<IPropertyHandle> Property = Settings->GetChildHandle(PropertyName);
+        if (Property.IsValid() && Property->IsValidHandle())
+        {
+            Destination.AddProperty(Property.ToSharedRef());
+        }
+    }
+
+    void AddEffectiveQualityRow(IDetailCategoryBuilder& Destination, const bool bPreview, const FText& Label)
+    {
+        Destination.AddCustomRow(Label)
+        .NameContent()
+        [
+            SNew(STextBlock)
+            .Font(IDetailLayoutBuilder::GetDetailFont())
+            .Text(Label)
+        ]
+        .ValueContent()
+        .MinDesiredWidth(300.0f)
+        [
+            SNew(STextBlock)
+            .Font(IDetailLayoutBuilder::GetDetailFont())
+            .Text_Lambda([this, bPreview]() { return GetEffectiveQualityText(bPreview); })
+            .ToolTipText_Lambda([this, bPreview]() { return GetEffectiveQualityText(bPreview); })
+        ];
+    }
+
+    FText GetEffectiveQualityText(const bool bPreview) const
+    {
+        if (!Region.IsValid()) return FText::GetEmpty();
+
+        int32 Resolution = 0;
+        int32 Batches = 0;
+        int32 PhotonsPerBatch = 0;
+        int32 Bounces = 0;
+        int32 AtrousIterations = 0;
+        Region->Settings.Resolve(bPreview, Resolution, Batches, PhotonsPerBatch, Bounces, AtrousIterations);
+        const int64 TotalPhotons = static_cast<int64>(Batches) * static_cast<int64>(PhotonsPerBatch);
+        return FText::Format(LOCTEXT("EffectiveQualityFormat", "{0} x {1} = {2} photons | {3} x {3} px | {4} bounces | {5} a-trous"),
+            FText::AsNumber(Batches), FText::AsNumber(PhotonsPerBatch), FText::AsNumber(TotalPhotons),
+            FText::AsNumber(Resolution), FText::AsNumber(Bounces), FText::AsNumber(AtrousIterations));
+    }
+
     UCausticsBakerEditorSubsystem* GetSubsystem() const
     {
         return GEditor ? GEditor->GetEditorSubsystem<UCausticsBakerEditorSubsystem>() : nullptr;
     }
-    FReply Preview() { if (Region.IsValid()) GetSubsystem()->RequestPreview(Region.Get()); return FReply::Handled(); }
-    FReply Bake() { if (Region.IsValid()) GetSubsystem()->RequestBake(Region.Get()); return FReply::Handled(); }
-    FReply Cancel() { if (GetSubsystem()) GetSubsystem()->Cancel(); return FReply::Handled(); }
-    FReply Clear() { if (Region.IsValid()) GetSubsystem()->ClearPreview(Region.Get()); return FReply::Handled(); }
-    FReply OpenOutput() { if (Region.IsValid()) Region->OpenOutputTexture(); return FReply::Handled(); }
+
+    FReply Preview()
+    {
+        if (UCausticsBakerEditorSubsystem* Subsystem = GetSubsystem(); Region.IsValid() && Subsystem)
+        {
+            Subsystem->RequestPreview(Region.Get());
+        }
+        return FReply::Handled();
+    }
+
+    FReply Bake()
+    {
+        if (UCausticsBakerEditorSubsystem* Subsystem = GetSubsystem(); Region.IsValid() && Subsystem)
+        {
+            Subsystem->RequestBake(Region.Get());
+        }
+        return FReply::Handled();
+    }
+
+    FReply Cancel()
+    {
+        if (UCausticsBakerEditorSubsystem* Subsystem = GetSubsystem()) Subsystem->Cancel();
+        return FReply::Handled();
+    }
+
+    FReply Clear()
+    {
+        if (UCausticsBakerEditorSubsystem* Subsystem = GetSubsystem(); Region.IsValid() && Subsystem)
+        {
+            Subsystem->ClearPreview(Region.Get());
+        }
+        return FReply::Handled();
+    }
+
+    FReply OpenOutput()
+    {
+        if (Region.IsValid()) Region->OpenOutputTexture();
+        return FReply::Handled();
+    }
 
     TWeakObjectPtr<ACausticsBakeRegion> Region;
     FString CachedSignature;

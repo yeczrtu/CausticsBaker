@@ -24,9 +24,9 @@ enum class ECausticsThicknessMode : uint8
 UENUM(BlueprintType)
 enum class ECausticsQualityPreset : uint8
 {
-    Preview,
-    Bake,
-    Custom
+    Preview UMETA(DisplayName = "Preview (Fast)"),
+    Bake UMETA(DisplayName = "Bake (High Quality)"),
+    Custom UMETA(DisplayName = "Custom (Preview and Bake)")
 };
 
 UENUM(BlueprintType)
@@ -100,16 +100,16 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, Category = "Quality")
+    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ToolTip = "Preview uses the fast preset and Bake uses the selected preset. Select Custom to use the editable values for both Preview and Bake."))
     ECausticsQualityPreset Preset = ECausticsQualityPreset::Bake;
 
-    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "256", ClampMax = "4096", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))
+    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "256", ClampMax = "4096", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides, ToolTip = "Power-of-two output resolution used by both Preview and Bake in Custom mode."))
     int32 Resolution = 2048;
 
-    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1", ClampMax = "256", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))
+    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1", ClampMax = "256", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides, ToolTip = "Number of independently traced photon batches. Total photons = Photon Batches x Photons Per Batch."))
     int32 PhotonBatches = 32;
 
-    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1024", ClampMax = "4194304", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))
+    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1024", ClampMax = "4194304", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides, ToolTip = "Photons traced by each batch. Total photons = Photon Batches x Photons Per Batch."))
     int32 PhotonsPerBatch = 524288;
 
     UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1", ClampMax = "16", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))
@@ -139,7 +139,15 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
     void Resolve(bool bPreview, int32& OutResolution, int32& OutBatches, int32& OutPhotonsPerBatch,
         int32& OutMaxBounces, int32& OutAtrousIterations) const
     {
-        if (bPreview || Preset == ECausticsQualityPreset::Preview)
+        if (Preset == ECausticsQualityPreset::Custom)
+        {
+            OutResolution = FMath::Clamp(FMath::RoundUpToPowerOfTwo(static_cast<uint32>(Resolution)), 256u, 4096u);
+            OutBatches = FMath::Clamp(PhotonBatches, 1, 256);
+            OutPhotonsPerBatch = FMath::Clamp(PhotonsPerBatch, 1024, 4194304);
+            OutMaxBounces = FMath::Clamp(MaxBounces, 1, 16);
+            OutAtrousIterations = FMath::Clamp(AtrousIterations, 0, 8);
+        }
+        else if (bPreview || Preset == ECausticsQualityPreset::Preview)
         {
             OutResolution = 512;
             OutBatches = 8;
@@ -154,14 +162,6 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
             OutPhotonsPerBatch = 524288;
             OutMaxBounces = 8;
             OutAtrousIterations = 4;
-        }
-        else
-        {
-            OutResolution = FMath::Clamp(FMath::RoundUpToPowerOfTwo(static_cast<uint32>(Resolution)), 256u, 4096u);
-            OutBatches = FMath::Clamp(PhotonBatches, 1, 256);
-            OutPhotonsPerBatch = FMath::Clamp(PhotonsPerBatch, 1024, 4194304);
-            OutMaxBounces = FMath::Clamp(MaxBounces, 1, 16);
-            OutAtrousIterations = FMath::Clamp(AtrousIterations, 0, 8);
         }
     }
 };

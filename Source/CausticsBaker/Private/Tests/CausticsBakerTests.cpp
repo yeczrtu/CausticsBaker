@@ -260,6 +260,23 @@ bool FCausticsSettingsAndStateTest::RunTest(const FString&)
     TestEqual(TEXT("Preview photons"), Photons, 131072);
     TestEqual(TEXT("Preview bounces"), Bounces, 6);
     TestEqual(TEXT("Preview a-trous"), Atrous, 2);
+
+    Settings.Preset = ECausticsQualityPreset::Custom;
+    Settings.Resolution = 1000;
+    Settings.PhotonBatches = 3;
+    Settings.PhotonsPerBatch = 4096;
+    Settings.MaxBounces = 5;
+    Settings.AtrousIterations = 1;
+    Settings.Resolve(true, Resolution, Batches, Photons, Bounces, Atrous);
+    TestEqual(TEXT("Custom preview resolution rounds to a power of two"), Resolution, 1024);
+    TestEqual(TEXT("Custom preview batches"), Batches, 3);
+    TestEqual(TEXT("Custom preview photons"), Photons, 4096);
+    TestEqual(TEXT("Custom preview bounces"), Bounces, 5);
+    TestEqual(TEXT("Custom preview a-trous"), Atrous, 1);
+
+    Settings.Resolve(false, Resolution, Batches, Photons, Bounces, Atrous);
+    TestEqual(TEXT("Custom bake batches"), Batches, 3);
+    TestEqual(TEXT("Custom bake photons"), Photons, 4096);
     TestTrue(TEXT("Validating to guide"), CausticsBaker::Math::IsValidJobTransition(
         ECausticsBakeJobState::Validating, ECausticsBakeJobState::BuildingGuide));
     TestTrue(TEXT("Tracing to cancellation"), CausticsBaker::Math::IsValidJobTransition(
