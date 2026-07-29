@@ -5,6 +5,7 @@
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
 ![Version](https://img.shields.io/badge/version-1.2.8-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
 
@@ -286,3 +287,13 @@ v1.2.8では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit�
 - Region、Light、Caster設定が分かるスクリーンショット
 - Output Logのエラー全文
 - 最小限の再現手順
+
+## ライセンス
+
+CausticsBakerの独自コードとドキュメントは[MIT License](LICENSE)で公開しています。
+
+- マテリアルレイトレーシング統合は、MIT Licenseの[historia-Inc/CustomRaytracingShader](https://github.com/historia-Inc/CustomRaytracingShader)を一部参考にしています。
+- 任意のBakeデノイザは、Unreal Engine 5.8が提供するApache-2.0のIntel Open Image Denoiseを利用します。OIDN本体はこのリポジトリやプラグインパッケージには含まれません。
+- Unreal Engine本体は含まれません。ビルドと利用には、別途ライセンスされたUnreal Engine 5.8が必要です。
+
+著作権表示と各外部依存の条件は[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
