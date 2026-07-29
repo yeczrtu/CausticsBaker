@@ -482,13 +482,16 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     Request.BatchCount = BatchCount;
     Request.PhotonsPerBatch = PhotonsPerBatch;
     Request.MaxBounces = MaxBounces;
-    Request.GuideSamples = bPreview ? 1 : 4;
+    // A 2x2 guide is inexpensive compared with photon tracing and prevents
+    // thin or grazing receiver footprints from disappearing in Preview.
+    Request.GuideSamples = 4;
     Request.AtrousIterations = Region->Settings.Denoiser == ECausticsDenoiser::None ? 0 : AtrousIterations;
     Request.RandomSeed = Region->Settings.RandomSeed;
     Request.SPPMAlpha = FMath::Clamp(Region->Settings.SPPMConvergence, 0.01f, 1.0f);
     Request.InitialRadiusTexels = Region->Settings.InitialRadiusTexels;
     Request.FilterStrength = Region->Settings.FilterStrength;
     Request.DebugDisplay = Region->Settings.DebugDisplay;
+    Request.ProjectionMode = Region->Settings.ProjectionMode;
     Request.RegionToWorld = FMatrix44f(Region->GetActorTransform().ToMatrixWithScale());
     Request.WorldToRegion = FMatrix44f(Region->GetActorTransform().ToInverseMatrixWithScale());
     Request.RegionSize = FVector3f(Region->Depth, Region->Width, Region->Height);
@@ -497,6 +500,8 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     const float TexelY = RegionTransform.TransformVector(FVector(0.0, Region->Width / Resolution, 0.0)).Size();
     const float TexelZ = RegionTransform.TransformVector(FVector(0.0, 0.0, Region->Height / Resolution)).Size();
     Request.ProjectionTexelWorldSize = FMath::Max(TexelY, TexelZ);
+    Request.ProjectionDirectionWorld = FVector3f(
+        RegionTransform.TransformVectorNoScale(FVector::ForwardVector).GetSafeNormal());
 
     FBox CaptureBounds = Region->GetWorldProjectionBounds();
     FBox CasterBounds(ForceInit);
@@ -507,6 +512,12 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
         Caster.PrimitiveComponentId = Primitive->GetPrimitiveSceneId();
         Caster.OpticalMode = Entry.OpticalMode;
         Caster.ThicknessMode = Entry.ThicknessMode;
+        // The material RT payload can lose the original blend mode when UE
+        // flattens legacy translucency into a simplified Substrate closure.
+        // Preserve the component-level fact that Auto selected a translucent
+        // material so the shader cannot accidentally classify it as metal.
+        Caster.bAutoTreatAsDielectric =
+            Entry.OpticalMode == ECausticsOpticalMode::AutoFromMaterial && HasTranslucentMaterial(Primitive);
         Caster.IOR = Entry.IndexOfRefraction;
         Caster.Roughness = FMath::Clamp(Entry.Roughness, 0.001f, 1.0f);
         Caster.Tint = FVector3f(Entry.Tint.R, Entry.Tint.G, Entry.Tint.B);

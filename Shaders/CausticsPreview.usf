@@ -9,8 +9,11 @@ Texture2D SceneDepthTexture;
 SamplerState BilinearClampSampler;
 float4x4 WorldToRegion;
 float3 RegionSize;
+float3 ProjectionDirectionWorld;
+float ProjectionTexelWorldSize;
 uint BakeResolution;
 uint DebugDisplay;
+uint ProjectionMode;
 
 float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
 {
@@ -24,11 +27,22 @@ float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
         return 0.0;
     }
     const float2 BakeUV = float2(Local.y / RegionSize.y + 0.5, 0.5 - Local.z / RegionSize.z);
+
+    // Final/Raw/Filtered/OIDN output defaults to decal behavior: the 2D map
+    // is projected onto every visible surface inside the box. Guide debug
+    // modes and the optional strict mode retain front-layer matching.
+    if (ProjectionMode == 0u && DebugDisplay <= 3u)
+    {
+        return CausticsTexture.SampleLevel(BilinearClampSampler, BakeUV, 0);
+    }
+
     const uint2 BakePixel = min((uint2)(saturate(BakeUV) * BakeResolution), BakeResolution - 1u);
     const uint ReceiverId = GuideId.Load(int3(BakePixel, 0));
     if (ReceiverId == 0xffffffffu) return 0.0;
     const float4 G = Guide.Load(int3(BakePixel, 0));
-    const float DepthTolerance = max(0.5, RegionSize.x / BakeResolution * 2.0);
+    const float ProjectionCosine = abs(dot(normalize(G.yzw), normalize(ProjectionDirectionWorld)));
+    const float SurfaceSlopeTolerance = ProjectionTexelWorldSize * 1.5 / max(0.05, ProjectionCosine);
+    const float DepthTolerance = max(0.5, max(RegionSize.x / BakeResolution * 2.0, SurfaceSlopeTolerance));
     if (abs(Local.x - G.x) > DepthTolerance) return 0.0;
 
     if (DebugDisplay == 4u) return float4(G.xxx / max(1.0, RegionSize.x), 1.0);

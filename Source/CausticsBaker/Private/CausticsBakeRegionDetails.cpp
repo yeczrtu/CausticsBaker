@@ -67,6 +67,7 @@ public:
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, InitialRadiusTexels));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, FilterStrength));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, Denoiser));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, ProjectionMode));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, DebugDisplay));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, OutputFormat));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, LDRWhiteLevel));

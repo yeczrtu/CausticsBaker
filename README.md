@@ -3,7 +3,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.5-orange)
+![Version](https://img.shields.io/badge/version-1.2.6-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 
 UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
@@ -28,6 +28,7 @@ URLを単独の行に置くと、GitHub上で動画プレイヤーとして表�
 
 - Hardware Ray Tracingのmaterial pipelineを利用したフォトンマッピング
 - `Caustics Bake Region`の投影ボックスによるデカールライクな領域指定
+- ボックス内の全可視面へ表示する`Decal-like`と、最前面だけを確認する`Guide-matched`投影
 - 投影ボックス内のReceiver自動検出と、任意のReceiver Filter
 - Directional／Point／Spot Lightからのフォトン放出
 - Static Mesh／Instanced Static Mesh／Hierarchical Instanced Static MeshのCasterとReceiver
@@ -86,7 +87,7 @@ CasterとReceiverに使用するコンポーネントでは、`Visible in Ray Tr
 4. `Casters`へ要素を追加し、コースティクスを発生させるStatic Mesh／ISM／HISMコンポーネントを選択します。
 5. 必要に応じてCasterの`Optical Mode`と光学値を設定します。
 6. `Receiver Filter (Optional)`は、通常は空のままにします。
-7. `Preview`で結果を確認します。
+7. 通常は`Viewport Projection`を`Decal-like`のままにして、`Preview`で結果を確認します。
 8. 品質と出力形式を選び、`Bake`を実行します。
 9. 生成されたTextureアセットをContent Browserから保存します。
 
@@ -100,6 +101,17 @@ Regionのローカル軸は次のように使用されます。
 
 投影ボックスはRegion原点から`+X`方向へ伸びます。Guideはこの方向へレイを飛ばし、同じ投影UVで最初に見つかったReceiver 1層を採用します。
 
+### ビューポート投影モード
+
+| Viewport Projection | 表示方法 |
+| --- | --- |
+| `Decal-like (All Surfaces in Box)` | 既定値です。ベイクした2Dマップを、ボックス内で現在見えているすべての面へ投影します。壁、床、天井や斜面をまたぐ配置に向きます。 |
+| `Guide-matched (Front Surface Only)` | Guideが物理計算に採用した最前面Receiverだけへ表示します。Guideとの対応や深度を厳密に確認するときに使います。 |
+
+出力は1枚の投影Texture2Dなので、同じ投影UVで奥行き方向に重なる面は別々の値を保持できません。`Decal-like`ではそれらの面が同じテクセルを共有します。各面に異なる物理結果が必要な場合は、Regionを分割するか小さくしてください。
+
+斜面では投影1テクセルが受光面上で広がるため、v1.2.6以降はGuideの深度許容幅とSPPM探索半径を面の角度に応じて補正します。Regionを大きくすると1テクセルが覆う実寸も大きくなるので、細部が必要ならResolutionを上げるかRegionを分割します。
+
 ## Receiverの自動検出
 
 `Receiver Filter (Optional)`が空の場合、投影ボックスと交差するray-tracing-visibleなStatic Mesh／ISM／HISMコンポーネントが自動的にReceiverになります。Casterへ登録したコンポーネントは自動Receiverから除外されます。
@@ -112,11 +124,11 @@ Receiver Filterは、投影先を特定のメッシュだけへ制限したい�
 
 | Optical Mode | 用途 |
 | --- | --- |
-| `Auto from Material (Top Surface)` | Ray Tracing payloadの簡略化された最上位マテリアルから、光学タイプ、IOR／F0、roughness、tint、normalを取得します。 |
+| `Auto from Material (Top Surface)` | Ray Tracing payloadの簡略化された最上位マテリアルから、光学タイプ、IOR／F0、roughness、tint、normalを取得します。`Optical Tint / F0`は取得色へ乗算され、色が取得できない場合のフォールバックにもなります。 |
 | `Dielectric Override (Glass)` | IOR、roughness、透過tint、吸収、Solid／Thinを明示するガラス向け設定です。 |
 | `Conductor Override (Metal)` | roughnessと反射F0色を明示する金属向け設定です。 |
 
-SubstrateのAutoモードは、Ray Tracing用に簡略化された最上位のSlabまたはSingle Layer Waterを使用します。任意のSubstrate積層をそのまま再現するものではありません。自動判定が意図と異なる場合は、GlassまたはMetalのOverrideを使用してください。
+SubstrateのAutoモードは、Ray Tracing用に簡略化された最上位のSlabまたはSingle Layer Waterを使用します。任意のSubstrate積層をそのまま再現するものではありません。UE 5.8が透過色や有効な最上位ClosureをRT payloadへ渡さないマテリアルもあるため、色付きガラスを確実に再現する場合は`Dielectric Override (Glass)`を選び、`Optical Tint / F0`を設定してください。
 
 ### シャープなガラスコースティクスの開始値
 
@@ -205,7 +217,7 @@ Receiverが光学的な焦点位置から外れている場合、フォトン数
 9. 必要に応じてGPU à-trousとIntel OIDNを適用します。
 10. `FRHIGPUTextureReadback`完了後、Game ThreadでTexture2Dを更新します。
 
-PreviewはScene DepthからWorld Positionを再構築し、Region内かつGuide depthと一致する面へPre-PostProcessでHDR結果を加算します。メインビューポートのGI設定は変更しません。
+PreviewはScene DepthからWorld Positionを再構築し、`Decal-like`ではRegion内の全可視面、`Guide-matched`ではGuide depthと一致する面へPre-PostProcessでHDR結果を加算します。メインビューポートのGI設定は変更しません。
 
 </details>
 
@@ -216,8 +228,10 @@ PreviewはScene DepthからWorld Positionを再構築し、Region内かつGuide 
 | Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
 | Point／Spot Lightで結果が出ない | `Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。 |
 | `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
+| 大きいRegionや斜めの壁・天井で一部が消える | v1.2.6以降を使用し、`Viewport Projection`を`Decal-like`にします。細部が不足する場合はResolutionを上げるか、Regionを分割します。 |
 | Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |
 | 半透明Casterが拒否される | `r.RayTracing.ExcludeTranslucent 0`を設定し、Casterの`Visible in Ray Tracing`を確認します。 |
+| 半透明コースティクスが白い | `Dielectric Override (Glass)`と目的の`Optical Tint / F0`を設定します。Autoで色を取得できる場合も、Tintは乗算色として利用できます。 |
 | ガラスの模様がぼやける | Glass Override、Solid、roughness、光源サイズ、Initial Radius、Receiverの焦点距離を確認します。最初はDenoiserをNoneにします。 |
 | 8bit出力が白飛びする | `8-bit White Level`を大きくします。HDR値がWhite Level以上のRGBは255へクランプされます。 |
 | Preview／OutputがOut of Dateになる | Region、ライト、Caster／Receiver、マテリアル、Bake設定の変更後はPreviewまたはBakeを再実行します。 |
@@ -231,7 +245,7 @@ PreviewはScene DepthからWorld Positionを再構築し、Region内かつGuide 
 - Static Mesh、ISM、HISMのみ
 - Skeletal Mesh、Landscape、Geometry Collectionは対象外
 - Volumetric caustics、色分散は対象外
-- 投影方向に重なる複数Receiver層は、最前面1層のみ
+- 物理計算用Guideは、投影方向に重なる複数Receiver層の最前面1層のみ。`Decal-like`表示では同じ2Dテクセルを奥行き方向の面へ再投影します
 - Receiver UVへの直接ベイクは対象外
 - Runtime Decal／Materialの自動生成は対象外
 - SubstrateはRay Tracing用に簡略化された最上位Surfaceのみ
@@ -258,7 +272,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.5では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、Point Lightの範囲検証と近接配置を含む8個の自動テストを確認しています。
+v1.2.6では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、Point Lightの範囲検証と近接配置、色付き半透明Casterを含む8個の自動テストを確認しています。
 
 ## Issueを報告する場合
 

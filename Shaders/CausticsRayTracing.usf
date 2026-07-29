@@ -44,6 +44,8 @@ RWStructuredBuffer<FPhotonRecord> PhotonRecords;
 float4x4 RegionToWorld;
 float4x4 WorldToRegion;
 float3 RegionSize;
+float3 ProjectionDirectionWorld;
+float ProjectionTexelWorldSize;
 float3 PreViewTranslation;
 uint OutputResolution;
 uint GuideSampleCount;
@@ -102,6 +104,17 @@ float3 TransformPosition(float3 P, float4x4 M)
 float3 TransformVector(float3 V, float4x4 M)
 {
     return mul(float4(V, 0.0), M).xyz;
+}
+
+float ComputeGuideDepthTolerance(float3 WorldNormal)
+{
+    // A projected texel spans a much larger depth interval on a grazing
+    // surface. The previous fixed tolerance rejected correct hits whenever a
+    // large region was rotated toward a wall or ceiling.
+    const float ProjectionCosine = abs(dot(normalize(WorldNormal), normalize(ProjectionDirectionWorld)));
+    const float SurfaceSlopeTolerance = ProjectionTexelWorldSize * 1.5 / max(0.05, ProjectionCosine);
+    const float BaseTolerance = RegionSize.x / OutputResolution * 2.0;
+    return max(0.5, max(BaseTolerance, SurfaceSlopeTolerance));
 }
 
 uint GetPersistentPrimitiveId(FPackedMaterialClosestHitPayload Payload)
@@ -172,8 +185,33 @@ bool TraceMaterial(float3 Origin, float3 Direction, float MinT, out FPackedMater
 // the first decoded BSDF is the single surface approximation supplied to RT.
 // This intentionally ignores lower layers; arbitrary Substrate trees cannot be
 // reproduced by this v1 photon payload.
+float3 ResolveChromaticMaterialTint(float3 TransmissionColor, float3 BaseColor)
+{
+    const float3 Transmission = saturate(TransmissionColor);
+    const float TransmissionMax = max(Transmission.x, max(Transmission.y, Transmission.z));
+    const float TransmissionMin = min(Transmission.x, min(Transmission.y, Transmission.z));
+    const float3 Base = saturate(BaseColor);
+    const float3 Candidate = TransmissionMax - TransmissionMin > 1.0e-3 ? Transmission : Base;
+    const float CandidateMax = max(Candidate.x, max(Candidate.y, Candidate.z));
+    const float CandidateMin = min(Candidate.x, min(Candidate.y, Candidate.z));
+    // Neutral opacity is coverage, not a spectral tint. Preserve only the hue
+    // here; explicit Tint/Absorption overrides remain available for calibrated
+    // energy loss through a volume.
+    return CandidateMax > 1.0e-4 && CandidateMax - CandidateMin > 1.0e-3
+        ? Candidate / CandidateMax
+        : float3(1.0, 1.0, 1.0);
+}
+
+bool IsUsableDielectricF0(float3 F0)
+{
+    const float F0Max = max(F0.x, max(F0.y, F0.z));
+    const float F0Min = min(F0.x, min(F0.y, F0.z));
+    return all(isfinite(F0)) && F0Max >= 1.0e-4 && F0Max <= 0.25 && F0Max - F0Min <= 0.1;
+}
+
 bool ResolveAutoOptics(
     FPackedMaterialClosestHitPayload Payload,
+    bool ForceDielectric,
     inout uint OpticalMode,
     inout float IOR,
     inout float Roughness,
@@ -185,7 +223,15 @@ bool ResolveAutoOptics(
         Payload.SubstrateData, Addressing, Payload.SubstrateData);
     if (!Header.IsSubstrateMaterial() || Header.ClosureCount == 0u)
     {
-        return false;
+        // Some blendable legacy materials are translated through Substrate
+        // without exporting a decodable top closure to this RT payload. Keep
+        // the selected caster usable with its configured IOR/roughness and a
+        // transmission-color fallback instead of silently absorbing photons.
+        OpticalMode = 1u;
+        IOR = max(1.0001, IOR);
+        Roughness = max(0.001, Roughness);
+        Tint = ResolveChromaticMaterialTint(Payload.GetTransmittancePreCoverage(), float3(1.0, 1.0, 1.0));
+        return true;
     }
 
     const FSubstrateBSDF SurfaceBSDF = UnpackSubstrateBSDFIn(
@@ -194,13 +240,24 @@ bool ResolveAutoOptics(
     if (BSDFType != SUBSTRATE_BSDF_TYPE_SLAB &&
         BSDFType != SUBSTRATE_BSDF_TYPE_SINGLELAYERWATER)
     {
+        if (ForceDielectric)
+        {
+            OpticalMode = 1u;
+            IOR = max(1.0001, IOR);
+            Roughness = max(0.001, Roughness);
+            Tint = ResolveChromaticMaterialTint(
+                Payload.GetTransmittancePreCoverage(), float3(1.0, 1.0, 1.0));
+            return true;
+        }
         return false;
     }
 
     const float3 F0 = saturate(SubstrateGetBSDFSpecularF0(SurfaceBSDF));
     Roughness = max(0.001, SubstrateGetBSDFRoughness(SurfaceBSDF));
 
-    if (BSDFType == SUBSTRATE_BSDF_TYPE_SLAB &&
+    const bool IsTranslucentSurface =
+        Payload.GetBlendingMode() != RAY_TRACING_BLEND_MODE_OPAQUE;
+    if (!ForceDielectric && !IsTranslucentSurface && BSDFType == SUBSTRATE_BSDF_TYPE_SLAB &&
         SubstrateGetBSDFMetallic(SurfaceBSDF) >= 0.5)
     {
         OpticalMode = 2u;
@@ -212,11 +269,12 @@ bool ResolveAutoOptics(
     // top Slab (or Single Layer Water) is therefore treated as a dielectric
     // interface even when an opaque Substrate blend hides its lower layers.
     OpticalMode = 1u;
-    IOR = max(1.0001, DielectricF0RGBToIor(F0));
+    if (!ForceDielectric || IsUsableDielectricF0(F0))
+    {
+        IOR = max(1.0001, DielectricF0RGBToIor(F0));
+    }
     const float3 MaterialTransmittance = saturate(Payload.GetTransmittancePreCoverage());
-    Tint = max(MaterialTransmittance.x, max(MaterialTransmittance.y, MaterialTransmittance.z)) > 1.0e-4
-        ? MaterialTransmittance
-        : float3(1.0, 1.0, 1.0);
+    Tint = ResolveChromaticMaterialTint(MaterialTransmittance, SubstrateGetBSDFBaseColor(SurfaceBSDF));
     // ThicknessMode is an explicit caster setting.  A visually thin
     // translucent material is often applied to a closed glass mesh, so the
     // material's Thin Surface bit must not silently turn that mesh into a
@@ -224,7 +282,9 @@ bool ResolveAutoOptics(
     return true;
 #else
     Roughness = max(0.001, Payload.GetRoughness());
-    if (Payload.GetMetallic() >= 0.5)
+    const bool IsTranslucentSurface =
+        Payload.GetBlendingMode() != RAY_TRACING_BLEND_MODE_OPAQUE;
+    if (!ForceDielectric && !IsTranslucentSurface && Payload.GetMetallic() >= 0.5)
     {
         OpticalMode = 2u;
         Tint = max(0.0, Payload.GetSpecularColor());
@@ -235,15 +295,23 @@ bool ResolveAutoOptics(
     // material payload. As with the adaptive format, a selected non-metal
     // caster is interpreted as a dielectric top interface.
     OpticalMode = 1u;
-    IOR = max(1.0001, DielectricF0RGBToIor(saturate(Payload.GetSpecularColor())));
-    Tint = float3(1.0, 1.0, 1.0);
+    const float3 SpecularF0 = saturate(Payload.GetSpecularColor());
+    if (!ForceDielectric || IsUsableDielectricF0(SpecularF0))
+    {
+        IOR = max(1.0001, DielectricF0RGBToIor(SpecularF0));
+    }
+    Tint = ResolveChromaticMaterialTint(Payload.GetBaseColor(), Payload.GetBaseColor());
     return true;
 #else
-    if (Payload.GetBlendingMode() != RAY_TRACING_BLEND_MODE_OPAQUE)
+    if (ForceDielectric || IsTranslucentSurface)
     {
         OpticalMode = 1u;
-        IOR = max(1.0001, Payload.GetIor());
-        Tint = max(0.0, Payload.GetBaseColor());
+        const float MaterialIOR = Payload.GetIor();
+        if (isfinite(MaterialIOR) && MaterialIOR > 1.0001 && MaterialIOR <= 3.0)
+        {
+            IOR = MaterialIOR;
+        }
+        Tint = ResolveChromaticMaterialTint(Payload.GetBaseColor(), Payload.GetBaseColor());
         return true;
     }
     return false;
@@ -514,8 +582,9 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
                 {
                     const uint2 Pixel = min((uint2)(UV * OutputResolution), OutputResolution - 1u);
                     const uint GuidePrimitive = GuideId[Pixel];
-                    const float GuideDepth = Guide[Pixel].x;
-                    const float GuideDepthTolerance = max(0.5, RegionSize.x / OutputResolution * 2.0);
+                    const float4 GuideValue = Guide[Pixel];
+                    const float GuideDepth = GuideValue.x;
+                    const float GuideDepthTolerance = ComputeGuideDepthTolerance(GuideValue.yzw);
                     if (GuidePrimitive == PrimitiveId && abs(Local.x - GuideDepth) <= GuideDepthTolerance)
                     {
                         Result.Position = Position;
@@ -542,7 +611,8 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
         if (!Entering) { Ng = -Ng; N = -N; }
         if (dot(N, Ng) < 0.0) N = -N;
         uint OpticalMode = Caster.OpticalMode;
-        uint ThicknessMode = Caster.ThicknessMode;
+        const bool ForceAutoDielectric = (Caster.ThicknessMode & 0x80000000u) != 0u;
+        uint ThicknessMode = Caster.ThicknessMode & 0x7fffffffu;
         float IOR = Caster.IOR;
         float3 Tint = Caster.TintRoughness.xyz;
         float Roughness = max(0.001, Caster.TintRoughness.w);
@@ -551,10 +621,12 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
             // Auto mode reads the simplified material top surface.  Explicit
             // dielectric/conductor modes intentionally retain every optical
             // override above; only the material shading normal is shared.
-            if (!ResolveAutoOptics(Payload, OpticalMode, IOR, Roughness, Tint))
+            const float3 AutoTintMultiplier = max(0.0, Tint);
+            if (!ResolveAutoOptics(Payload, ForceAutoDielectric, OpticalMode, IOR, Roughness, Tint))
             {
                 break;
             }
+            Tint *= AutoTintMultiplier;
         }
 
         const float3 M = SampleGGXNormal(N, Roughness, float2(Random01(RNG), Random01(RNG)));

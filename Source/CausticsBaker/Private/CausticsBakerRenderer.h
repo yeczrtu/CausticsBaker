@@ -22,6 +22,7 @@ struct FCausticsRenderCaster
     FPrimitiveComponentId PrimitiveComponentId;
     ECausticsOpticalMode OpticalMode = ECausticsOpticalMode::AutoFromMaterial;
     ECausticsThicknessMode ThicknessMode = ECausticsThicknessMode::Solid;
+    bool bAutoTreatAsDielectric = false;
     float IOR = 1.5f;
     float Roughness = 0.02f;
     FVector3f Tint = FVector3f(1.0f);
@@ -46,8 +47,10 @@ struct FCausticsRenderRequest
     float SPPMAlpha = 0.7f;
     float InitialRadiusTexels = 3.0f;
     float ProjectionTexelWorldSize = 1.0f;
+    FVector3f ProjectionDirectionWorld = FVector3f(1.0f, 0.0f, 0.0f);
     float FilterStrength = 1.0f;
     ECausticsDebugDisplay DebugDisplay = ECausticsDebugDisplay::Final;
+    ECausticsProjectionMode ProjectionMode = ECausticsProjectionMode::DecalLike;
 
     FMatrix44f RegionToWorld = FMatrix44f::Identity;
     FMatrix44f WorldToRegion = FMatrix44f::Identity;

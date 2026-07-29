@@ -240,6 +240,7 @@ FString ACausticsBakeRegion::BuildBakeSignature() const
         Settings.InitialRadiusTexels, Settings.FilterStrength, static_cast<int32>(Settings.Denoiser),
         static_cast<int32>(Settings.DebugDisplay));
     Source += FString::Printf(TEXT("|%d|%.9g"), static_cast<int32>(Settings.OutputFormat), Settings.LDRWhiteLevel);
+    Source += FString::Printf(TEXT("|ProjectionMode%d"), static_cast<int32>(Settings.ProjectionMode));
     Source += bAutoFitDepthToReceiverFilter ? TEXT("|AutoFitDepth1") : TEXT("|AutoFitDepth0");
 
     const auto AppendComponent = [&Source](const UActorComponent* ActorComponent)

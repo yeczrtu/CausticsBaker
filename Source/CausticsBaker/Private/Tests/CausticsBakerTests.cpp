@@ -6,6 +6,7 @@
 #include "CausticsBakeRegion.h"
 #include "CausticsBakerEditorSubsystem.h"
 #include "CausticsTextureOutput.h"
+#include "AssetCompilingManager.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
@@ -18,6 +19,9 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "Math/Float16Color.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Misc/AutomationTest.h"
 #include "RenderUtils.h"
 #include "RenderingThread.h"
@@ -130,6 +134,12 @@ namespace
                 }
                 BakeRegion->LightActor = PointLightActor;
                 BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::HDR16F;
+                // Exercise Auto with an explicit color multiplier/fallback.
+                // The component's translucent blend mode must keep this on the
+                // dielectric path even if the simplified Substrate payload
+                // omits or misclassifies its top closure.
+                BakeRegion->Casters[0].OpticalMode = ECausticsOpticalMode::AutoFromMaterial;
+                BakeRegion->Casters[0].Tint = FLinearColor(0.05f, 0.8f, 0.1f);
                 UPointLightComponent* PointLightComponent =
                     CastChecked<UPointLightComponent>(PointLightActor->GetLightComponent());
                 PointLightComponent->SetAttenuationRadius(10.0f);
@@ -174,6 +184,9 @@ namespace
                     bool bHasColor = false;
                     bool bHasCoverage = false;
                     bool bColorIsFinite = true;
+                    double RedEnergy = 0.0;
+                    double GreenEnergy = 0.0;
+                    double BlueEnergy = 0.0;
                     if (Texture && Texture->Source.GetFormat() == TSF_RGBA16F)
                     {
                         if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
@@ -187,6 +200,9 @@ namespace
                                 bColorIsFinite &= FMath::IsFinite(R) && FMath::IsFinite(G) && FMath::IsFinite(B);
                                 bHasColor |= R > 1.0e-8f || G > 1.0e-8f || B > 1.0e-8f;
                                 bHasCoverage |= Pixels[Index].A.GetFloat() > 0.0f;
+                                RedEnergy += R;
+                                GreenEnergy += G;
+                                BlueEnergy += B;
                             }
                             Texture->Source.UnlockMip(0);
                         }
@@ -196,6 +212,8 @@ namespace
                     Test->TestTrue(TEXT("GPU Point Light output is finite"), bColorIsFinite);
                     Test->TestTrue(TEXT("GPU Point Light produces nonzero caustics"), bHasColor);
                     Test->TestTrue(TEXT("GPU Point Light retains receiver coverage"), bHasCoverage);
+                    Test->TestTrue(TEXT("Auto translucent fallback produces green caustics"),
+                        GreenEnergy > RedEnergy * 2.0 && GreenEnergy > BlueEnergy * 2.0);
                 }
                 Cleanup();
                 return true;
@@ -436,6 +454,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsSettingsAndStateTest,
 bool FCausticsSettingsAndStateTest::RunTest(const FString&)
 {
     FCausticsBakeSettings Settings;
+    TestEqual(TEXT("Viewport projection defaults to decal-like all-surface display"),
+        Settings.ProjectionMode, ECausticsProjectionMode::DecalLike);
     int32 Resolution, Batches, Photons, Bounces, Atrous;
     Settings.Resolve(true, Resolution, Batches, Photons, Bounces, Atrous);
     TestEqual(TEXT("Preview resolution"), Resolution, 512);
@@ -578,6 +598,31 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     UStaticMeshComponent* ReceiverComponent = ReceiverActor->GetStaticMeshComponent();
     CasterComponent->SetStaticMesh(SphereMesh);
     ReceiverComponent->SetStaticMesh(ReceiverMesh);
+
+    UMaterial* ColoredTranslucentMaterial = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+    ColoredTranslucentMaterial->BlendMode = BLEND_Translucent;
+    ColoredTranslucentMaterial->SetShadingModel(MSM_DefaultLit);
+    ColoredTranslucentMaterial->TwoSided = true;
+    UMaterialEditorOnlyData* MaterialData = ColoredTranslucentMaterial->GetEditorOnlyData();
+    UMaterialExpressionConstant3Vector* BaseColor =
+        NewObject<UMaterialExpressionConstant3Vector>(ColoredTranslucentMaterial);
+    BaseColor->Constant = FLinearColor(0.05f, 0.8f, 0.1f);
+    MaterialData->BaseColor.Connect(0, BaseColor);
+    ColoredTranslucentMaterial->GetExpressionCollection().AddExpression(BaseColor);
+    const auto ConnectScalar = [ColoredTranslucentMaterial](FScalarMaterialInput& Input, const float Value)
+    {
+        UMaterialExpressionConstant* Expression =
+            NewObject<UMaterialExpressionConstant>(ColoredTranslucentMaterial);
+        Expression->R = Value;
+        Input.Connect(0, Expression);
+        ColoredTranslucentMaterial->GetExpressionCollection().AddExpression(Expression);
+    };
+    ConnectScalar(MaterialData->Opacity, 0.25f);
+    ConnectScalar(MaterialData->Roughness, 0.001f);
+    ConnectScalar(MaterialData->Refraction, 1.5f);
+    ColoredTranslucentMaterial->PostEditChange();
+    FAssetCompilingManager::Get().FinishAllCompilation();
+    CasterComponent->SetMaterial(0, ColoredTranslucentMaterial);
     ReceiverActor->SetActorScale3D(FVector(0.1, 5.0, 5.0));
     CasterComponent->bVisibleInRayTracing = true;
     ReceiverComponent->bVisibleInRayTracing = true;

@@ -35,6 +35,7 @@ uint BatchCount;
 float SPPMAlpha;
 float InitialRadiusWorld;
 float ProjectionTexelWorldSize;
+float3 ProjectionDirectionWorld;
 float4x4 RegionToWorld;
 float3 RegionSize;
 
@@ -99,9 +100,13 @@ void DensityEstimateCS(uint3 DispatchId : SV_DispatchThreadID)
     const float4 GuideValue = Guide.Load(int3(Pixel, 0));
     const float3 Center = ReconstructGuidePosition(Pixel, GuideValue.x);
     const float3 Normal = normalize(GuideValue.yzw);
+    const float ProjectionCosine = abs(dot(Normal, normalize(ProjectionDirectionWorld)));
+    // Preserve the requested radius in surface texels. One projected texel
+    // covers more world-space distance as the receiver turns edge-on.
+    const float SurfaceInitialRadius = InitialRadiusWorld / max(0.15, ProjectionCosine);
     const float4 OldStats = SPPMStats[Pixel];
     const float OldN = BatchIndex == 0u ? 0.0 : OldStats.x;
-    const float OldRadius = BatchIndex == 0u ? InitialRadiusWorld : max(1.0e-4, OldStats.y);
+    const float OldRadius = BatchIndex == 0u ? SurfaceInitialRadius : max(1.0e-4, OldStats.y);
     const float Radius2 = OldRadius * OldRadius;
     const int2 CenterBin = int2(Pixel / 8u);
     const int BinRadius = max(1, (int)ceil(OldRadius / max(1.0e-4, ProjectionTexelWorldSize * 8.0)));

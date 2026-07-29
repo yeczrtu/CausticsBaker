@@ -78,6 +78,8 @@ public:
         SHADER_PARAMETER(FMatrix44f, RegionToWorld)
         SHADER_PARAMETER(FMatrix44f, WorldToRegion)
         SHADER_PARAMETER(FVector3f, RegionSize)
+        SHADER_PARAMETER(FVector3f, ProjectionDirectionWorld)
+        SHADER_PARAMETER(float, ProjectionTexelWorldSize)
         SHADER_PARAMETER(FVector3f, PreViewTranslation)
         SHADER_PARAMETER(uint32, OutputResolution)
         SHADER_PARAMETER(uint32, PhotonCount)
@@ -195,6 +197,7 @@ public:
         SHADER_PARAMETER(float, SPPMAlpha)
         SHADER_PARAMETER(float, InitialRadiusWorld)
         SHADER_PARAMETER(float, ProjectionTexelWorldSize)
+        SHADER_PARAMETER(FVector3f, ProjectionDirectionWorld)
         SHADER_PARAMETER(FMatrix44f, RegionToWorld)
         SHADER_PARAMETER(FVector3f, RegionSize)
     END_SHADER_PARAMETER_STRUCT()
@@ -251,8 +254,11 @@ public:
         SHADER_PARAMETER_SAMPLER(SamplerState, BilinearClampSampler)
         SHADER_PARAMETER(FMatrix44f, WorldToRegion)
         SHADER_PARAMETER(FVector3f, RegionSize)
+        SHADER_PARAMETER(FVector3f, ProjectionDirectionWorld)
+        SHADER_PARAMETER(float, ProjectionTexelWorldSize)
         SHADER_PARAMETER(uint32, BakeResolution)
         SHADER_PARAMETER(uint32, DebugDisplay)
+        SHADER_PARAMETER(uint32, ProjectionMode)
         SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
         RENDER_TARGET_BINDING_SLOTS()
     END_SHADER_PARAMETER_STRUCT()
@@ -320,7 +326,11 @@ namespace
             FCausticsGpuCaster Dest;
             Dest.PrimitiveId = PersistentIndex.Index;
             Dest.OpticalMode = static_cast<uint32>(Source.OpticalMode);
-            Dest.ThicknessMode = static_cast<uint32>(Source.ThicknessMode);
+            // The high bit is an internal Auto-mode hint; the low bits retain
+            // the public ECausticsThicknessMode value without changing the GPU
+            // structured-buffer layout.
+            Dest.ThicknessMode = static_cast<uint32>(Source.ThicknessMode) |
+                (Source.bAutoTreatAsDielectric ? 0x80000000u : 0u);
             Dest.IOR = Source.IOR;
             Dest.TintRoughness = FVector4f(Source.Tint.X, Source.Tint.Y, Source.Tint.Z, Source.Roughness);
             Dest.AbsorptionThickness = FVector4f(Source.Absorption.X, Source.Absorption.Y, Source.Absorption.Z, Source.ThinThicknessCm);
@@ -468,6 +478,8 @@ namespace
         RayParameters->RegionToWorld = Job.Request.RegionToWorld;
         RayParameters->WorldToRegion = Job.Request.WorldToRegion;
         RayParameters->RegionSize = Job.Request.RegionSize;
+        RayParameters->ProjectionDirectionWorld = Job.Request.ProjectionDirectionWorld;
+        RayParameters->ProjectionTexelWorldSize = Job.Request.ProjectionTexelWorldSize;
         RayParameters->PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
         RayParameters->OutputResolution = Resolution;
         RayParameters->PhotonCount = PhotonCount;
@@ -554,6 +566,7 @@ namespace
         Density->SPPMAlpha = Job.Request.SPPMAlpha;
         Density->InitialRadiusWorld = Job.Request.InitialRadiusTexels * Job.Request.ProjectionTexelWorldSize;
         Density->ProjectionTexelWorldSize = Job.Request.ProjectionTexelWorldSize;
+        Density->ProjectionDirectionWorld = Job.Request.ProjectionDirectionWorld;
         Density->RegionToWorld = Job.Request.RegionToWorld;
         Density->RegionSize = Job.Request.RegionSize;
         FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Caustics SPPM Density"), DensityShader, Density,
@@ -767,8 +780,11 @@ void FCausticsBakerViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& G
     Parameters->BilinearClampSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
     Parameters->WorldToRegion = PreviewJob->Request.WorldToRegion;
     Parameters->RegionSize = PreviewJob->Request.RegionSize;
+    Parameters->ProjectionDirectionWorld = PreviewJob->Request.ProjectionDirectionWorld;
+    Parameters->ProjectionTexelWorldSize = PreviewJob->Request.ProjectionTexelWorldSize;
     Parameters->BakeResolution = PreviewJob->Request.Resolution;
     Parameters->DebugDisplay = static_cast<uint32>(PreviewJob->Request.DebugDisplay);
+    Parameters->ProjectionMode = static_cast<uint32>(PreviewJob->Request.ProjectionMode);
     Parameters->View = View.ViewUniformBuffer;
     Parameters->RenderTargets[0] = FRenderTargetBinding(SceneColor.Texture, ERenderTargetLoadAction::ELoad);
     TShaderMapRef<FCausticsPreviewPS> PixelShader(View.ShaderMap);

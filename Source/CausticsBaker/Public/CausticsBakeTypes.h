@@ -51,6 +51,13 @@ enum class ECausticsDebugDisplay : uint8
 };
 
 UENUM(BlueprintType)
+enum class ECausticsProjectionMode : uint8
+{
+    DecalLike UMETA(DisplayName = "Decal-like (All Surfaces in Box)", ToolTip = "Projects the baked 2D caustics map onto every visible surface inside the box. Overlapping surfaces share the same projected texel, like an Unreal decal."),
+    GuideMatched UMETA(DisplayName = "Guide-matched (Front Surface Only)", ToolTip = "Shows the result only on the receiver surface selected by the projection guide. Use this to inspect the physically evaluated front layer without decal-style reprojection.")
+};
+
+UENUM(BlueprintType)
 enum class ECausticsOutputFormat : uint8
 {
     HDR16F UMETA(DisplayName = "16-bit Float HDR (RGBA16F)", ToolTip = "Preserves the full linear HDR caustics irradiance. Uses RGBA16F, HDR compression, and linear sampling."),
@@ -92,7 +99,7 @@ struct CAUSTICSBAKER_API FCausticsCasterEntry
     UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.001", ClampMax = "1.0", EditCondition = "OpticalMode != ECausticsOpticalMode::AutoFromMaterial", EditConditionHides, ToolTip = "Microfacet roughness used by explicit Glass/Metal modes. Use 0.001 for a sharp polished caustic."))
     float Roughness = 0.02f;
 
-    UPROPERTY(EditAnywhere, Category = "Optics", meta = (DisplayName = "Optical Tint / F0", EditCondition = "OpticalMode != ECausticsOpticalMode::AutoFromMaterial", EditConditionHides, ToolTip = "Transmission tint for Glass or specular F0 color for Metal."))
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (DisplayName = "Optical Tint / F0", ToolTip = "Transmission tint for Glass or specular F0 color for Metal. In Auto mode this multiplies the material-derived tint and provides a reliable fallback when UE's simplified Substrate ray-tracing payload does not export transmission color."))
     FLinearColor Tint = FLinearColor::White;
 
     UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.0", DisplayName = "Absorption (1/cm)"))
@@ -139,6 +146,9 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
 
     UPROPERTY(EditAnywhere, Category = "Filtering")
     ECausticsDenoiser Denoiser = ECausticsDenoiser::Atrous;
+
+    UPROPERTY(EditAnywhere, Category = "Projection", meta = (DisplayName = "Viewport Projection", ToolTip = "Decal-like projects the baked map onto all visible surfaces in the box. Guide-matched restricts the viewport result to the evaluated front receiver layer."))
+    ECausticsProjectionMode ProjectionMode = ECausticsProjectionMode::DecalLike;
 
     UPROPERTY(EditAnywhere, Category = "Debug")
     ECausticsDebugDisplay DebugDisplay = ECausticsDebugDisplay::Final;
