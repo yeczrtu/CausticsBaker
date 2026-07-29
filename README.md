@@ -3,7 +3,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.7-orange)
+![Version](https://img.shields.io/badge/version-1.2.8-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 
 UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
@@ -228,7 +228,8 @@ PreviewはScene DepthからWorld Positionを再構築し、`Decal-like`ではReg
 | 症状／メッセージ | 確認する項目 |
 | --- | --- |
 | Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
-| Point／Spot Lightで結果が出ない | `Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。`Max Optical Bounces`はMetalなら1以上、閉じたSolid Glassなら通常2以上にします。 |
+| Point／Spot Lightで結果が出ない | v1.2.8以降を使用し、`Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。`Max Optical Bounces`はMetalなら1以上、閉じたSolid Glassなら通常2以上にします。 |
+| Directional Lightで影の中のCasterから結果が出る | v1.2.8以降では投影ボックス上流端からCasterまでの遮蔽物をフォトンが判定します。遮蔽物を含むように投影ボックスを配置してください。なお、Caster自体に光が届いている場合、反射／屈折したコースティクスが通常の直接光の影へ入ること自体は物理的に正常です。 |
 | `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
 | 大きいRegionや斜めの壁・天井で一部が消える | v1.2.6以降を使用し、`Viewport Projection`を`Decal-like`にします。細部が不足する場合はResolutionを上げるか、Regionを分割します。 |
 | Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |
@@ -274,7 +275,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.7では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、2バウンスSolid GlassのPoint Light、失敗した再Previewの自動クリア、色付き半透明Casterを含む8個の自動テストを確認しています。
+v1.2.8では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、UEの測光単位を反映したPoint Light、Directional Lightの上流遮蔽物、2バウンスSolid Glass、失敗した再Previewの自動クリア、色付き半透明Casterを含む8個の自動テストを確認しています。
 
 ## Issueを報告する場合
 

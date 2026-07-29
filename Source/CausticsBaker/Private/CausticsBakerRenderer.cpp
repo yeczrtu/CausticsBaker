@@ -667,6 +667,23 @@ FString FCausticsRenderJob::GetError() const
     return Error;
 }
 
+void FCausticsRenderJob::SetResultStatistics(const int32 InCoverageTexels, const int32 InLitTexels,
+    const float InMaxRadiance, const double InTotalLuminance)
+{
+    FScopeLock Lock(&DataGuard);
+    CoverageTexels = InCoverageTexels;
+    LitTexels = InLitTexels;
+    MaxRadiance = InMaxRadiance;
+    TotalLuminance = InTotalLuminance;
+}
+
+FString FCausticsRenderJob::GetResultStatisticsText() const
+{
+    FScopeLock Lock(&DataGuard);
+    return FString::Printf(TEXT("%d lit / %d covered texels, max %.6g, total luminance %.6g"),
+        LitTexels, CoverageTexels, MaxRadiance, TotalLuminance);
+}
+
 void FCausticsRenderJob::SetPixels(TArray<FFloat16Color>&& InPixels, TArray<FVector3f>&& InNormals)
 {
     FScopeLock Lock(&DataGuard);
@@ -1021,15 +1038,29 @@ void FCausticsBakerRenderManager::PollReadback(const TSharedPtr<FCausticsRenderJ
 
         bool bAnyCoverage = false;
         bool bAnyRadiance = false;
+        int32 CoverageTexels = 0;
+        int32 LitTexels = 0;
+        float MaxRadiance = 0.0f;
+        double TotalLuminance = 0.0;
         for (const FFloat16Color& Pixel : Pixels)
         {
+            const float R = Pixel.R.GetFloat();
+            const float G = Pixel.G.GetFloat();
+            const float B = Pixel.B.GetFloat();
             if (Pixel.A.GetFloat() > 0.0f)
             {
                 bAnyCoverage = true;
+                ++CoverageTexels;
             }
-            bAnyRadiance |= Pixel.R.GetFloat() > 0.0f || Pixel.G.GetFloat() > 0.0f || Pixel.B.GetFloat() > 0.0f;
-            if (bAnyCoverage && bAnyRadiance) break;
+            if (R > 0.0f || G > 0.0f || B > 0.0f)
+            {
+                bAnyRadiance = true;
+                ++LitTexels;
+                MaxRadiance = FMath::Max(MaxRadiance, FMath::Max3(R, G, B));
+                TotalLuminance += FMath::Max(0.0f, 0.2126f * R + 0.7152f * G + 0.0722f * B);
+            }
         }
+        Job->SetResultStatistics(CoverageTexels, LitTexels, MaxRadiance, TotalLuminance);
         if (!bAnyCoverage)
         {
             if (UnmatchedGeometryPixels > 0)

@@ -562,8 +562,14 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     ULightComponent* Light = Region->ResolveLight();
     Request.LightPosition = FVector3f(Light->GetComponentLocation());
     Request.LightDirection = FVector3f(Light->GetDirection().GetSafeNormal());
-    Request.LightColor = FVector3f(FLinearColor::FromSRGBColor(Light->LightColor));
-    Request.LightIntensity = Light->Intensity;
+    // Match the value UE sends to its light scene proxy.  Reading Intensity
+    // directly is not equivalent for local lights: Point/Spot lights convert
+    // Lumens, Candelas, EV, or legacy Unitless values (and IES/temperature)
+    // in ComputeLightBrightness().  The old path could make a normal Point
+    // Light hundreds of times dimmer than its viewport representation.
+    const FLinearColor EffectiveLightColor = Light->GetColoredLightBrightness();
+    Request.LightColor = FVector3f(EffectiveLightColor.R, EffectiveLightColor.G, EffectiveLightColor.B);
+    Request.LightIntensity = 1.0f;
     if (const UDirectionalLightComponent* Directional = Cast<UDirectionalLightComponent>(Light))
     {
         Request.LightType = ECausticsRenderLightType::Directional;
@@ -610,8 +616,39 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
         }
     }
     Request.EmissionHalfExtent = ProjectedHalfExtent * 1.01f;
-    Request.EmissionCenter = Request.CasterBoundsCenter - Request.LightDirection * (Request.CasterBoundsRadius + 10.0f);
-    CaptureBounds += FVector(Request.LightPosition);
+
+    // A Directional Light has no meaningful world-space source position.  Its
+    // photon plane must start upstream of the complete bake volume, not merely
+    // just in front of the caster bounds.  Starting at the caster skipped a
+    // wall/ceiling between the light and caster and therefore produced
+    // caustics from casters that were visibly in shadow.
+    float DirectionalUpstreamDistance = Request.CasterBoundsRadius + 10.0f;
+    if (Request.LightType == ECausticsRenderLightType::Directional)
+    {
+        const FVector BoundsMin = CaptureBounds.Min;
+        const FVector BoundsMax = CaptureBounds.Max;
+        for (int32 X = 0; X < 2; ++X)
+        {
+            for (int32 Y = 0; Y < 2; ++Y)
+            {
+                for (int32 Z = 0; Z < 2; ++Z)
+                {
+                    const FVector Corner(X ? BoundsMax.X : BoundsMin.X,
+                        Y ? BoundsMax.Y : BoundsMin.Y, Z ? BoundsMax.Z : BoundsMin.Z);
+                    const float AxisOffset = static_cast<float>(FVector::DotProduct(
+                        Corner - FVector(Request.CasterBoundsCenter), LightDirection));
+                    DirectionalUpstreamDistance = FMath::Max(DirectionalUpstreamDistance, -AxisOffset + 10.0f);
+                }
+            }
+        }
+    }
+    Request.EmissionCenter = Request.CasterBoundsCenter - Request.LightDirection * DirectionalUpstreamDistance;
+    if (Request.LightType != ECausticsRenderLightType::Directional)
+    {
+        // Unlike a Directional Light, a local light's source position is part
+        // of the physical light path and must be retained by the capture view.
+        CaptureBounds += FVector(Request.LightPosition);
+    }
     CaptureBounds += FVector(Request.EmissionCenter);
 
     const FBoxSphereBounds CaptureSphere(CaptureBounds);
@@ -620,6 +657,16 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     const FVector CaptureLocation = CaptureCenter - FVector(1.0f, 0.0f, 0.0f) * CaptureRadius * 2.5f;
     CaptureOwner->SetActorLocationAndRotation(CaptureLocation, (CaptureCenter - CaptureLocation).Rotation());
     SceneCapture->MaxViewDistanceOverride = CaptureRadius * 8.0f;
+
+    const TCHAR* LightTypeName = Request.LightType == ECausticsRenderLightType::Directional
+        ? TEXT("Directional")
+        : (Request.LightType == ECausticsRenderLightType::Point ? TEXT("Point") : TEXT("Spot"));
+    UE_LOG(LogCausticsBakerSubsystem, Display,
+        TEXT("Starting %s: Region=%s Light=%s Type=%s EffectiveRGB=(%.6g, %.6g, %.6g) Position=%s Direction=%s AttenuationRadius=%.3f MaxOpticalBounces=%d EmissionCenter=%s"),
+        bPreview ? TEXT("Preview") : TEXT("Bake"), *Region->GetPathName(), *Light->GetPathName(), LightTypeName,
+        Request.LightColor.X, Request.LightColor.Y, Request.LightColor.Z,
+        *FVector(Request.LightPosition).ToCompactString(), *LightDirection.ToCompactString(),
+        Request.LightAttenuationRadius, Request.MaxBounces, *FVector(Request.EmissionCenter).ToCompactString());
 
     RenderJob = GetCausticsBakerRenderManager().Start(MoveTemp(Request));
     if (!RenderJob.IsValid())
@@ -769,7 +816,11 @@ void UCausticsBakerEditorSubsystem::Tick(float)
             ActiveRegion->bPreviewOutOfDate = false;
             DisplayedPreviewRegion = ActiveRegion;
         }
-        FinishTerminalJob(ECausticsBakeJobState::Complete, LOCTEXT("PreviewComplete", "Caustics preview complete"));
+        const TCHAR* LightTypeName = RenderJob->Request.LightType == ECausticsRenderLightType::Directional
+            ? TEXT("Directional")
+            : (RenderJob->Request.LightType == ECausticsRenderLightType::Point ? TEXT("Point") : TEXT("Spot"));
+        FinishTerminalJob(ECausticsBakeJobState::Complete, FText::FromString(FString::Printf(
+            TEXT("Caustics preview complete (%s; %s)"), LightTypeName, *RenderJob->GetResultStatisticsText())));
     }
     else if (RenderState == ECausticsBakeJobState::Failed)
     {

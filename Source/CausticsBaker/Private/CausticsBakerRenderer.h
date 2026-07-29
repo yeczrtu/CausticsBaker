@@ -120,12 +120,18 @@ public:
 
     void SetError(FString InError);
     FString GetError() const;
+    void SetResultStatistics(int32 InCoverageTexels, int32 InLitTexels, float InMaxRadiance, double InTotalLuminance);
+    FString GetResultStatisticsText() const;
     void SetPixels(TArray<FFloat16Color>&& InPixels, TArray<FVector3f>&& InNormals);
     bool ConsumePixels(TArray<FFloat16Color>& OutPixels, TArray<FVector3f>& OutNormals);
 
 private:
     mutable FCriticalSection DataGuard;
     FString Error;
+    int32 CoverageTexels = 0;
+    int32 LitTexels = 0;
+    float MaxRadiance = 0.0f;
+    double TotalLuminance = 0.0;
     TArray<FFloat16Color> CpuPixels;
     TArray<FVector3f> CpuNormals;
 };
