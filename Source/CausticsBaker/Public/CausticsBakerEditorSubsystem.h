@@ -88,6 +88,7 @@ private:
     TFuture<FCausticsOIDNResult> OIDNFuture;
     TArray<FFloat16Color> PendingBakePixels;
     TArray<FVector3f> PendingGuideNormals;
+    TWeakObjectPtr<ACausticsBakeRegion> DisplayedPreviewRegion;
     FString ActiveSignature;
     FDelegateHandle MapChangeHandle;
 };

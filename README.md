@@ -3,7 +3,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.6-orange)
+![Version](https://img.shields.io/badge/version-1.2.7-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 
 UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
@@ -161,7 +161,7 @@ Receiverが光学的な焦点位置から外れている場合、フォトン数
 - Resolution: 256～4096の2の累乗へ丸められます
 - Photon Batches
 - Photons Per Batch
-- Max Bounces
+- Max Optical Bounces（Receiverへの最終到達は数えません。Metalは通常1、閉じたSolid Glassは入射・出射で通常2以上）
 - Atrous Iterations
 - Random Seed
 - SPPM Convergence
@@ -171,6 +171,8 @@ Receiverが光学的な焦点位置から外れている場合、フォトン数
 総フォトン数は`Photon Batches × Photons Per Batch`です。値を増やすとノイズは減りますが、処理時間とGPU負荷も増えます。Initial Radiusを小さくすると細部を残しやすくなりますが、フォトン密度が不足するとノイズが増えます。
 
 `Effective Preview / Effective Bake`には、現在の設定から実際に使用される解像度、総フォトン数、バウンス数、フィルタ反復数が表示されます。
+
+`Preview`を押すと、以前のPreviewは計算開始前に自動で解除されます。新しい計算や事前検証が失敗した場合も古い結果を残さないため、影や旧配置に由来する結果を新しいPreviewと誤認しません。
 
 ## デノイズとデバッグ表示
 
@@ -226,7 +228,7 @@ PreviewはScene DepthからWorld Positionを再構築し、`Decal-like`ではReg
 | 症状／メッセージ | 確認する項目 |
 | --- | --- |
 | Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
-| Point／Spot Lightで結果が出ない | `Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。 |
+| Point／Spot Lightで結果が出ない | `Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。`Max Optical Bounces`はMetalなら1以上、閉じたSolid Glassなら通常2以上にします。 |
 | `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
 | 大きいRegionや斜めの壁・天井で一部が消える | v1.2.6以降を使用し、`Viewport Projection`を`Decal-like`にします。細部が不足する場合はResolutionを上げるか、Regionを分割します。 |
 | Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |
@@ -272,7 +274,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.6では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、Point Lightの範囲検証と近接配置、色付き半透明Casterを含む8個の自動テストを確認しています。
+v1.2.7では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、2バウンスSolid GlassのPoint Light、失敗した再Previewの自動クリア、色付き半透明Casterを含む8個の自動テストを確認しています。
 
 ## Issueを報告する場合
 

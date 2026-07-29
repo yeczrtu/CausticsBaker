@@ -1070,7 +1070,7 @@ void FCausticsBakerRenderManager::PollReadback(const TSharedPtr<FCausticsRenderJ
         {
             Job->SetError(Job->Request.LightType == ECausticsRenderLightType::Directional
                 ? TEXT("No caustic photons reached a receiver. Check that the light reaches a caster and that a reflected or refracted path can land on a receiver inside the projection box.")
-                : TEXT("No caustic photons reached a receiver. For Point/Spot lights, check Attenuation Radius, light-to-caster occlusion, and whether a reflected or refracted path can land on a receiver inside the projection box."));
+                : TEXT("No caustic photons reached a receiver. For Point/Spot lights, check Attenuation Radius, light-to-caster occlusion, and whether the reflected or refracted path lands inside the projection box. Metal needs at least 1 optical bounce; closed solid glass normally needs at least 2."));
             Job->TextureReadback.Reset();
             Job->GuideTextureReadback.Reset();
             Job->Stage.Store(ECausticsBakeJobState::Failed);

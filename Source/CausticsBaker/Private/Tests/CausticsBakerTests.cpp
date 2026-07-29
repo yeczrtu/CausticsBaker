@@ -143,7 +143,7 @@ namespace
                 UPointLightComponent* PointLightComponent =
                     CastChecked<UPointLightComponent>(PointLightActor->GetLightComponent());
                 PointLightComponent->SetAttenuationRadius(10.0f);
-                if (Baker->RequestBake(BakeRegion))
+                if (Baker->RequestPreview(BakeRegion))
                 {
                     Test->AddError(TEXT("A Point Light outside its Attenuation Radius unexpectedly passed validation."));
                     Baker->Cancel();
@@ -152,12 +152,20 @@ namespace
                 }
                 Test->TestTrue(TEXT("Point Light range validation reports Attenuation Radius"),
                     Baker->GetStatus().Message.ToString().Contains(TEXT("Attenuation Radius")));
+                FlushRenderingCommands();
+                Test->TestTrue(TEXT("Starting a replacement Preview clears its stale signature before validation"),
+                    BakeRegion->LastPreviewSignature.IsEmpty());
+                Test->TestTrue(TEXT("A failed replacement Preview remains out of date"),
+                    BakeRegion->bPreviewOutOfDate);
 
                 // Move the light outside the actual 50 cm sphere but inside
                 // its conservative FBoxSphereBounds. This exercises the
-                // full-sphere local-light emission path.
+                // full-sphere local-light emission path. Two optical bounces
+                // are exactly enough for solid-glass entry and exit; the
+                // receiver trace must be allowed after that budget is spent.
                 PointLightActor->SetActorLocation(BakeRegion->GetActorTransform().TransformPosition(FVector(80.0, 0.0, 0.0)));
                 PointLightComponent->SetAttenuationRadius(1000.0f);
+                BakeRegion->Settings.MaxBounces = 2;
                 bWaitingForLDRBake = false;
                 bWaitingForPointLightBake = true;
                 if (!Baker->RequestBake(BakeRegion))

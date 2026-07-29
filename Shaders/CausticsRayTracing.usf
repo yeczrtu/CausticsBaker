@@ -559,8 +559,12 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
     uint MediumDepth = 1;
     float TraveledDistance = 0.0;
 
+    // MaxBounces counts optical interactions with selected casters. The final
+    // receiver trace is not itself a bounce, so allow one additional trace.
+    // Previously MaxBounces=1 reflected from a metal surface and then stopped
+    // before testing the receiver, which made valid Point Light setups empty.
     [loop]
-    for (uint Bounce = 0; Bounce < MaxBounces; ++Bounce)
+    for (uint Bounce = 0; Bounce <= MaxBounces; ++Bounce)
     {
         FPackedMaterialClosestHitPayload Payload;
         if (!TraceMaterial(Origin, Direction, 0.01, Payload)) break;
@@ -595,6 +599,13 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
                     }
                 }
             }
+            break;
+        }
+
+        // The extra iteration above is reserved for the receiver. If it hits
+        // another caster, the configured optical-interaction budget is spent.
+        if (Bounce >= MaxBounces)
+        {
             break;
         }
 

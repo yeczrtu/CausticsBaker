@@ -126,7 +126,7 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
     UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1024", ClampMax = "4194304", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides, ToolTip = "Photons traced by each batch. Total photons = Photon Batches x Photons Per Batch."))
     int32 PhotonsPerBatch = 524288;
 
-    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1", ClampMax = "16", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))
+    UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "1", ClampMax = "16", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides, DisplayName = "Max Optical Bounces", ToolTip = "Maximum selected-caster surface interactions. The final receiver hit is not counted. Metal normally needs 1; a closed solid glass mesh normally needs at least 2 for entry and exit."))
     int32 MaxBounces = 8;
 
     UPROPERTY(EditAnywhere, Category = "Quality", meta = (ClampMin = "0", ClampMax = "8", EditCondition = "Preset == ECausticsQualityPreset::Custom", EditConditionHides))

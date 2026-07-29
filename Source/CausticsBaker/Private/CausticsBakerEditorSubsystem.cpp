@@ -411,6 +411,19 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     {
         return false;
     }
+    if (bPreview)
+    {
+        // A failed replacement preview must never leave an older result on
+        // screen. Clear the globally displayed preview before validation and
+        // mark this region stale until the new GPU result is validated.
+        ClearPreview();
+        if (Region)
+        {
+            Region->Modify();
+            Region->LastPreviewSignature.Reset();
+            Region->bPreviewOutOfDate = true;
+        }
+    }
     float PreviousDepth = 0.0f;
     const bool bDepthAutoFitted = AutoFitFilteredReceiverDepth(Region, PreviousDepth);
     SetStatus(ECausticsBakeJobState::Validating, 0.0f,
@@ -754,6 +767,7 @@ void UCausticsBakerEditorSubsystem::Tick(float)
             ActiveRegion->Modify();
             ActiveRegion->LastPreviewSignature = ActiveRegion->BuildBakeSignature();
             ActiveRegion->bPreviewOutOfDate = false;
+            DisplayedPreviewRegion = ActiveRegion;
         }
         FinishTerminalJob(ECausticsBakeJobState::Complete, LOCTEXT("PreviewComplete", "Caustics preview complete"));
     }
@@ -871,11 +885,16 @@ void UCausticsBakerEditorSubsystem::Cancel()
 void UCausticsBakerEditorSubsystem::ClearPreview(ACausticsBakeRegion* Region)
 {
     GetCausticsBakerRenderManager().ClearPreview(Region ? Region->GetUniqueID() : 0u);
-    if (Region)
+    ACausticsBakeRegion* MetadataRegion = Region ? Region : DisplayedPreviewRegion.Get();
+    if (MetadataRegion)
     {
-        Region->Modify();
-        Region->LastPreviewSignature.Reset();
-        Region->bPreviewOutOfDate = true;
+        MetadataRegion->Modify();
+        MetadataRegion->LastPreviewSignature.Reset();
+        MetadataRegion->bPreviewOutOfDate = true;
+    }
+    if (!Region || DisplayedPreviewRegion.Get() == Region)
+    {
+        DisplayedPreviewRegion.Reset();
     }
 }
 
@@ -893,6 +912,7 @@ void UCausticsBakerEditorSubsystem::DestroyCapture()
 void UCausticsBakerEditorSubsystem::NotifyRegionDestroyed(const ACausticsBakeRegion* Region)
 {
     GetCausticsBakerRenderManager().ClearPreview(Region ? Region->GetUniqueID() : 0u);
+    if (DisplayedPreviewRegion.Get() == Region) DisplayedPreviewRegion.Reset();
     if (ActiveRegion == Region) Cancel();
 }
 
