@@ -8,9 +8,11 @@
 #include "CausticsTextureOutput.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/DirectionalLightComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/PointLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Texture2D.h"
@@ -29,10 +31,11 @@ namespace
     public:
         FCausticsGpuBakeWaitCommand(FAutomationTestBase* InTest,
             UCausticsBakerEditorSubsystem* InSubsystem, ACausticsBakeRegion* InRegion,
-            TArray<TWeakObjectPtr<AActor>>&& InActors, const double InDeadline)
+            APointLight* InPointLight, TArray<TWeakObjectPtr<AActor>>&& InActors, const double InDeadline)
             : Test(InTest)
             , Subsystem(InSubsystem)
             , Region(InRegion)
+            , PointLight(InPointLight)
             , Actors(MoveTemp(InActors))
             , Deadline(InDeadline)
         {
@@ -89,6 +92,8 @@ namespace
                 {
                     Test->AddError(FString::Printf(TEXT("GPU 8-bit bake ended in %s: %s"),
                         *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                    Cleanup();
+                    return true;
                 }
                 else
                 {
@@ -115,6 +120,82 @@ namespace
                         Test->TestTrue(TEXT("GPU 8-bit output retains nonzero caustics color"), bHasColor);
                         Test->TestTrue(TEXT("GPU 8-bit output retains receiver coverage alpha"), bHasCoverage);
                     }
+                }
+                APointLight* PointLightActor = PointLight.Get();
+                if (!PointLightActor)
+                {
+                    Test->AddError(TEXT("The Point Light was destroyed before its GPU regression bake."));
+                    Cleanup();
+                    return true;
+                }
+                BakeRegion->LightActor = PointLightActor;
+                BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::HDR16F;
+                UPointLightComponent* PointLightComponent =
+                    CastChecked<UPointLightComponent>(PointLightActor->GetLightComponent());
+                PointLightComponent->SetAttenuationRadius(10.0f);
+                if (Baker->RequestBake(BakeRegion))
+                {
+                    Test->AddError(TEXT("A Point Light outside its Attenuation Radius unexpectedly passed validation."));
+                    Baker->Cancel();
+                    Cleanup();
+                    return true;
+                }
+                Test->TestTrue(TEXT("Point Light range validation reports Attenuation Radius"),
+                    Baker->GetStatus().Message.ToString().Contains(TEXT("Attenuation Radius")));
+
+                // Move the light outside the actual 50 cm sphere but inside
+                // its conservative FBoxSphereBounds. This exercises the
+                // full-sphere local-light emission path.
+                PointLightActor->SetActorLocation(BakeRegion->GetActorTransform().TransformPosition(FVector(80.0, 0.0, 0.0)));
+                PointLightComponent->SetAttenuationRadius(1000.0f);
+                bWaitingForLDRBake = false;
+                bWaitingForPointLightBake = true;
+                if (!Baker->RequestBake(BakeRegion))
+                {
+                    Test->AddError(FString::Printf(TEXT("Could not start GPU Point Light bake: %s"),
+                        *Baker->GetStatus().Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+                return false;
+            }
+            if (bWaitingForPointLightBake && (Status.State == ECausticsBakeJobState::Complete ||
+                Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
+            {
+                if (Status.State != ECausticsBakeJobState::Complete)
+                {
+                    Test->AddError(FString::Printf(TEXT("GPU Point Light bake ended in %s: %s"),
+                        *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                }
+                else
+                {
+                    UTexture2D* Texture = BakeRegion->OutputTexture;
+                    Test->TestNotNull(TEXT("GPU Point Light bake updated the output texture"), Texture);
+                    bool bHasColor = false;
+                    bool bHasCoverage = false;
+                    bool bColorIsFinite = true;
+                    if (Texture && Texture->Source.GetFormat() == TSF_RGBA16F)
+                    {
+                        if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
+                        {
+                            const FFloat16Color* Pixels = reinterpret_cast<const FFloat16Color*>(MipData);
+                            for (int32 Index = 0; Index < 256 * 256; ++Index)
+                            {
+                                const float R = Pixels[Index].R.GetFloat();
+                                const float G = Pixels[Index].G.GetFloat();
+                                const float B = Pixels[Index].B.GetFloat();
+                                bColorIsFinite &= FMath::IsFinite(R) && FMath::IsFinite(G) && FMath::IsFinite(B);
+                                bHasColor |= R > 1.0e-8f || G > 1.0e-8f || B > 1.0e-8f;
+                                bHasCoverage |= Pixels[Index].A.GetFloat() > 0.0f;
+                            }
+                            Texture->Source.UnlockMip(0);
+                        }
+                    }
+                    Test->TestEqual(TEXT("GPU Point Light output source format"),
+                        Texture ? Texture->Source.GetFormat() : TSF_Invalid, TSF_RGBA16F);
+                    Test->TestTrue(TEXT("GPU Point Light output is finite"), bColorIsFinite);
+                    Test->TestTrue(TEXT("GPU Point Light produces nonzero caustics"), bHasColor);
+                    Test->TestTrue(TEXT("GPU Point Light retains receiver coverage"), bHasCoverage);
                 }
                 Cleanup();
                 return true;
@@ -282,10 +363,12 @@ namespace
         FAutomationTestBase* Test = nullptr;
         TWeakObjectPtr<UCausticsBakerEditorSubsystem> Subsystem;
         TWeakObjectPtr<ACausticsBakeRegion> Region;
+        TWeakObjectPtr<APointLight> PointLight;
         TArray<TWeakObjectPtr<AActor>> Actors;
         double Deadline = 0.0;
         bool bWaitingForPreview = true;
         bool bWaitingForLDRBake = false;
+        bool bWaitingForPointLightBake = false;
         int32 PreviewHoldFrames = 0;
     };
 }
@@ -476,14 +559,17 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         RegionTransform.TransformPosition(FVector(230.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ADirectionalLight* LightActor = World->SpawnActor<ADirectionalLight>(
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
+    APointLight* PointLightActor = World->SpawnActor<APointLight>(
+        RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ACausticsBakeRegion* Region = World->SpawnActor<ACausticsBakeRegion>(
         RegionTransform.GetLocation(), RegionTransform.Rotator(), SpawnParameters);
-    if (!CasterActor || !ReceiverActor || !LightActor || !Region)
+    if (!CasterActor || !ReceiverActor || !LightActor || !PointLightActor || !Region)
     {
         AddError(TEXT("Could not spawn the GPU smoke-test actors."));
         if (CasterActor) World->DestroyActor(CasterActor, true);
         if (ReceiverActor) World->DestroyActor(ReceiverActor, true);
         if (LightActor) World->DestroyActor(LightActor, true);
+        if (PointLightActor) World->DestroyActor(PointLightActor, true);
         if (Region) World->DestroyActor(Region, true);
         return false;
     }
@@ -496,6 +582,11 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     CasterComponent->bVisibleInRayTracing = true;
     ReceiverComponent->bVisibleInRayTracing = true;
     LightActor->GetLightComponent()->SetIntensity(10.0f);
+    UPointLightComponent* PointLightComponent = CastChecked<UPointLightComponent>(PointLightActor->GetLightComponent());
+    PointLightComponent->SetMobility(EComponentMobility::Movable);
+    PointLightComponent->SetIntensity(5000.0f);
+    PointLightComponent->SetAttenuationRadius(1000.0f);
+    PointLightComponent->SetSourceRadius(0.0f);
 
     Region->Depth = 500.0f;
     Region->Width = 500.0f;
@@ -553,6 +644,7 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         World->DestroyActor(CasterActor, true);
         World->DestroyActor(ReceiverActor, true);
         World->DestroyActor(LightActor, true);
+        World->DestroyActor(PointLightActor, true);
         return false;
     }
     TestTrue(TEXT("Filtered receiver beyond Depth is auto-fitted before rendering"), Region->Depth > 230.0f);
@@ -562,8 +654,9 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     Actors.Add(CasterActor);
     Actors.Add(ReceiverActor);
     Actors.Add(LightActor);
+    Actors.Add(PointLightActor);
     ADD_LATENT_AUTOMATION_COMMAND(FCausticsGpuBakeWaitCommand(
-        this, Subsystem, Region, MoveTemp(Actors), FPlatformTime::Seconds() + 180.0));
+        this, Subsystem, Region, PointLightActor, MoveTemp(Actors), FPlatformTime::Seconds() + 180.0));
     return true;
 }
 

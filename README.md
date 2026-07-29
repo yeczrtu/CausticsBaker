@@ -3,7 +3,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.4-orange)
+![Version](https://img.shields.io/badge/version-1.2.5-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 
 UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
@@ -214,6 +214,7 @@ PreviewはScene DepthからWorld Positionを再構築し、Region内かつGuide 
 | 症状／メッセージ | 確認する項目 |
 | --- | --- |
 | Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
+| Point／Spot Lightで結果が出ない | `Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。 |
 | `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
 | Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |
 | 半透明Casterが拒否される | `r.RayTracing.ExcludeTranslucent 0`を設定し、Casterの`Visible in Ray Tracing`を確認します。 |
@@ -257,7 +258,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.4では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力を含む8個の自動テストを確認しています。
+v1.2.5では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、Point Lightの範囲検証と近接配置を含む8個の自動テストを確認しています。
 
 ## Issueを報告する場合
 

@@ -399,23 +399,42 @@ void GeneratePhoton(uint PhotonIndex, inout uint RNG, out float3 Origin, out flo
     }
     else
     {
-        float3 Axis = normalize(CasterBoundsCenter - LightPosition);
-        float3 T, B;
-        BuildBasis(Axis, T, B);
-        const float Distance = max(0.01, length(CasterBoundsCenter - LightPosition));
-        const float SinMax = saturate(CasterBoundsRadius / Distance);
-        const float CosMax = sqrt(saturate(1.0 - SinMax * SinMax));
-        const float CosTheta = lerp(1.0, CosMax, Xi.x);
-        const float SinTheta = sqrt(saturate(1.0 - CosTheta * CosTheta));
-        const float Phi = 2.0 * PI * Xi.y;
-        Direction = normalize(Axis * CosTheta + T * (SinTheta * cos(Phi)) + B * (SinTheta * sin(Phi)));
+        const float3 ToCaster = CasterBoundsCenter - LightPosition;
+        const float Distance = length(ToCaster);
+        float SolidAngle;
+        if (Distance <= CasterBoundsRadius + 1.0e-3)
+        {
+            // A cone that encloses a sphere is undefined when its apex is
+            // inside that sphere. This is common when a Point Light is placed
+            // close to a caster (or inside the combined bounds of several
+            // casters), so sample the complete sphere instead.
+            const float Z = 1.0 - 2.0 * Xi.x;
+            const float Radial = sqrt(saturate(1.0 - Z * Z));
+            const float Phi = 2.0 * PI * Xi.y;
+            Direction = float3(Radial * cos(Phi), Radial * sin(Phi), Z);
+            SolidAngle = 4.0 * PI;
+        }
+        else
+        {
+            const float3 Axis = ToCaster / Distance;
+            float3 T, B;
+            BuildBasis(Axis, T, B);
+            const float SinMax = saturate(CasterBoundsRadius / Distance);
+            const float CosMax = sqrt(saturate(1.0 - SinMax * SinMax));
+            const float CosTheta = lerp(1.0, CosMax, Xi.x);
+            const float SinTheta = sqrt(saturate(1.0 - CosTheta * CosTheta));
+            const float Phi = 2.0 * PI * Xi.y;
+            Direction = normalize(Axis * CosTheta + T * (SinTheta * cos(Phi)) + B * (SinTheta * sin(Phi)));
+            SolidAngle = max(1.0e-6, 2.0 * PI * (1.0 - CosMax));
+        }
         Origin = LightPosition;
         if (LightSourceRadius > 0.0)
         {
+            float3 T, B;
+            BuildBasis(Direction, T, B);
             const float2 Disk = UniformSampleDiskConcentric(float2(Random01(RNG), Random01(RNG))) * LightSourceRadius;
             Origin += T * Disk.x + B * Disk.y;
         }
-        const float SolidAngle = max(1.0e-6, 2.0 * PI * (1.0 - CosMax));
         Power = LightColor * LightIntensity * SolidAngle / max(1u, PhotonCount);
     }
 }

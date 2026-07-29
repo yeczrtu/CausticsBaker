@@ -1004,13 +1004,15 @@ void FCausticsBakerRenderManager::PollReadback(const TSharedPtr<FCausticsRenderJ
         Job->GuideTextureReadback->Unlock();
 
         bool bAnyCoverage = false;
+        bool bAnyRadiance = false;
         for (const FFloat16Color& Pixel : Pixels)
         {
             if (Pixel.A.GetFloat() > 0.0f)
             {
                 bAnyCoverage = true;
-                break;
             }
+            bAnyRadiance |= Pixel.R.GetFloat() > 0.0f || Pixel.G.GetFloat() > 0.0f || Pixel.B.GetFloat() > 0.0f;
+            if (bAnyCoverage && bAnyRadiance) break;
         }
         if (!bAnyCoverage)
         {
@@ -1042,6 +1044,17 @@ void FCausticsBakerRenderManager::PollReadback(const TSharedPtr<FCausticsRenderJ
                     TEXT("Receiver guide rays did not intersect any ray-tracing geometry (%d projection samples missed). Check region placement, +X projection direction, and TLAS visibility."),
                     NoGeometryPixels));
             }
+            Job->TextureReadback.Reset();
+            Job->GuideTextureReadback.Reset();
+            Job->Stage.Store(ECausticsBakeJobState::Failed);
+            Job->bReadbackPollQueued.Store(false);
+            return;
+        }
+        if (!bAnyRadiance)
+        {
+            Job->SetError(Job->Request.LightType == ECausticsRenderLightType::Directional
+                ? TEXT("No caustic photons reached a receiver. Check that the light reaches a caster and that a reflected or refracted path can land on a receiver inside the projection box.")
+                : TEXT("No caustic photons reached a receiver. For Point/Spot lights, check Attenuation Radius, light-to-caster occlusion, and whether a reflected or refracted path can land on a receiver inside the projection box."));
             Job->TextureReadback.Reset();
             Job->GuideTextureReadback.Reset();
             Job->Stage.Store(ECausticsBakeJobState::Failed);

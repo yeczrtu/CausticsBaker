@@ -9,6 +9,7 @@
 #include "Async/Async.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/LocalLightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -29,6 +30,8 @@
 #include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "CausticsBakerSubsystem"
+
+DEFINE_LOG_CATEGORY_STATIC(LogCausticsBakerSubsystem, Log, All);
 
 namespace
 {
@@ -228,6 +231,11 @@ void UCausticsBakerEditorSubsystem::SetStatus(const ECausticsBakeJobState NewSta
     Status.Message = Message;
     Status.bCancelPending = bCancelPending;
     OnStatusChanged.Broadcast(Status);
+    if (IsTerminalState(NewState))
+    {
+        UE_LOG(LogCausticsBakerSubsystem, Display, TEXT("Job ended in %s: %s"),
+            *CausticsBaker::JobStateToText(NewState).ToString(), *Message.ToString());
+    }
 }
 
 bool UCausticsBakerEditorSubsystem::RequestPreview(ACausticsBakeRegion* Region)
@@ -279,12 +287,18 @@ TArray<FText> UCausticsBakerEditorSubsystem::ValidateRegion(const ACausticsBakeR
     {
         Errors.Add(LOCTEXT("LightWorld", "The light must be in the same Editor world as the region."));
     }
+    else if (Light->GetColoredLightBrightness().GetLuminance() <= SMALL_NUMBER)
+    {
+        Errors.Add(LOCTEXT("ZeroLightBrightness", "The selected light has zero effective brightness. Increase Intensity and use a non-black Light Color."));
+    }
 
     if (Region->Casters.IsEmpty()) Errors.Add(LOCTEXT("NoCasters", "Add at least one caster."));
 
     TSet<const UPrimitiveComponent*> CasterSet;
     TSet<const UPrimitiveComponent*> ReceiverSet;
     bool bHasTranslucentCaster = false;
+    bool bAnyCasterWithinLocalLightRange = false;
+    const ULocalLightComponent* LocalLight = Cast<ULocalLightComponent>(Light);
     for (int32 Index = 0; Index < Region->Casters.Num(); ++Index)
     {
         const FCausticsCasterEntry& Entry = Region->Casters[Index];
@@ -311,11 +325,22 @@ TArray<FText> UCausticsBakerEditorSubsystem::ValidateRegion(const ACausticsBakeR
             Errors.Add(FText::Format(LOCTEXT("CasterDuplicate", "Caster {0} is listed more than once."), Index));
         }
         CasterSet.Add(Primitive);
+        if (LocalLight)
+        {
+            const double DistanceToCaster = FVector::Distance(LocalLight->GetComponentLocation(), Primitive->Bounds.Origin);
+            bAnyCasterWithinLocalLightRange |=
+                DistanceToCaster <= static_cast<double>(LocalLight->AttenuationRadius) + Primitive->Bounds.SphereRadius;
+        }
         bHasTranslucentCaster |= HasTranslucentMaterial(Primitive);
         if (Entry.OpticalMode == ECausticsOpticalMode::DielectricOverride && Entry.IndexOfRefraction <= 1.0f)
         {
             Errors.Add(FText::Format(LOCTEXT("InvalidIOR", "Caster {0}: dielectric IOR must be greater than 1."), Index));
         }
+    }
+    if (LocalLight && !CasterSet.IsEmpty() && !bAnyCasterWithinLocalLightRange)
+    {
+        Errors.Add(LOCTEXT("LocalLightOutOfRange",
+            "The Point/Spot Light Attenuation Radius does not reach any caster. Increase Attenuation Radius or move the light closer."));
     }
     if (!Region->Receivers.IsEmpty())
     {
