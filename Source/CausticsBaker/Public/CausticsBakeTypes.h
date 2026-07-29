@@ -51,6 +51,13 @@ enum class ECausticsDebugDisplay : uint8
 };
 
 UENUM(BlueprintType)
+enum class ECausticsOutputFormat : uint8
+{
+    HDR16F UMETA(DisplayName = "16-bit Float HDR (RGBA16F)", ToolTip = "Preserves the full linear HDR caustics irradiance. Uses RGBA16F, HDR compression, and linear sampling."),
+    LDR8 UMETA(DisplayName = "8-bit LDR (BGRA8)", ToolTip = "Scales and clamps irradiance to 0-1, stores RGB as a normal sRGB BGRA8 texture, and preserves receiver coverage in alpha.")
+};
+
+UENUM(BlueprintType)
 enum class ECausticsBakeJobState : uint8
 {
     Idle,
@@ -135,6 +142,12 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
 
     UPROPERTY(EditAnywhere, Category = "Debug")
     ECausticsDebugDisplay DebugDisplay = ECausticsDebugDisplay::Final;
+
+    UPROPERTY(EditAnywhere, Category = "Output", meta = (DisplayName = "Output Format", ToolTip = "Choose the source and compression format of the baked Texture2D. Preview always remains HDR."))
+    ECausticsOutputFormat OutputFormat = ECausticsOutputFormat::HDR16F;
+
+    UPROPERTY(EditAnywhere, Category = "Output", meta = (ClampMin = "0.0001", UIMin = "0.01", UIMax = "100.0", EditCondition = "OutputFormat == ECausticsOutputFormat::LDR8", EditConditionHides, DisplayName = "8-bit White Level", ToolTip = "Linear HDR irradiance encoded as 255 in the 8-bit RGB output. RGB is divided by this value and clamped; alpha coverage is not rescaled."))
+    float LDRWhiteLevel = 1.0f;
 
     void Resolve(bool bPreview, int32& OutResolution, int32& OutBatches, int32& OutPhotonsPerBatch,
         int32& OutMaxBounces, int32& OutAtrousIterations) const

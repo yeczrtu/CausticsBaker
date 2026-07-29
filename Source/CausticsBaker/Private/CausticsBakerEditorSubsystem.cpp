@@ -1,5 +1,7 @@
 #include "CausticsBakerEditorSubsystem.h"
 
+#include "CausticsTextureOutput.h"
+
 #include "CausticsBakeRegion.h"
 #include "CausticsBakerRenderer.h"
 #include "CausticsBakerSceneCapture.h"
@@ -695,7 +697,10 @@ void UCausticsBakerEditorSubsystem::Tick(float)
             }
         }
 
-        SetStatus(ECausticsBakeJobState::Saving, 0.98f, LOCTEXT("CreatingAsset", "Creating or updating the HDR texture asset"));
+        SetStatus(ECausticsBakeJobState::Saving, 0.98f,
+            ActiveRegion && ActiveRegion->Settings.OutputFormat == ECausticsOutputFormat::LDR8
+                ? LOCTEXT("CreatingLDRAsset", "Creating or updating the 8-bit LDR texture asset")
+                : LOCTEXT("CreatingHDRAsset", "Creating or updating the 16-bit HDR texture asset"));
         FString Error;
         UTexture2D* Texture = CreateOrUpdateTexture(PendingBakePixels, Error);
         if (!Texture)
@@ -756,10 +761,22 @@ UTexture2D* UCausticsBakerEditorSubsystem::CreateOrUpdateTexture(const TArray<FF
     }
     Texture->Modify();
     Texture->PreEditChange(nullptr);
-    Texture->Source.Init(RenderJob->Request.Resolution, RenderJob->Request.Resolution, 1, 1, TSF_RGBA16F,
-        reinterpret_cast<const uint8*>(Pixels.GetData()));
-    Texture->CompressionSettings = TC_HDR;
-    Texture->SRGB = false;
+    if (ActiveRegion->Settings.OutputFormat == ECausticsOutputFormat::LDR8)
+    {
+        const TArray<FColor> LDRPixels = CausticsBaker::TextureOutput::ConvertToLDR8(
+            Pixels, ActiveRegion->Settings.LDRWhiteLevel);
+        Texture->Source.Init(RenderJob->Request.Resolution, RenderJob->Request.Resolution, 1, 1, TSF_BGRA8,
+            reinterpret_cast<const uint8*>(LDRPixels.GetData()));
+        Texture->CompressionSettings = TC_Default;
+        Texture->SRGB = true;
+    }
+    else
+    {
+        Texture->Source.Init(RenderJob->Request.Resolution, RenderJob->Request.Resolution, 1, 1, TSF_RGBA16F,
+            reinterpret_cast<const uint8*>(Pixels.GetData()));
+        Texture->CompressionSettings = TC_HDR;
+        Texture->SRGB = false;
+    }
     Texture->AddressX = TA_Clamp;
     Texture->AddressY = TA_Clamp;
     Texture->LODGroup = TEXTUREGROUP_Effects;

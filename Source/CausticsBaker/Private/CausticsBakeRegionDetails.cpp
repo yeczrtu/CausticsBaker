@@ -68,6 +68,8 @@ public:
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, FilterStrength));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, Denoiser));
         AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, DebugDisplay));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, OutputFormat));
+        AddSettingProperty(Quality, Settings, GET_MEMBER_NAME_CHECKED(FCausticsBakeSettings, LDRWhiteLevel));
 
         AddEffectiveQualityRow(Quality, true, LOCTEXT("EffectivePreview", "Effective Preview"));
         AddEffectiveQualityRow(Quality, false, LOCTEXT("EffectiveBake", "Effective Bake"));

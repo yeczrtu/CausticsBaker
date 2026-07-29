@@ -239,6 +239,7 @@ FString ACausticsBakeRegion::BuildBakeSignature() const
         Settings.PhotonsPerBatch, Settings.MaxBounces, Settings.AtrousIterations, Settings.RandomSeed, Settings.SPPMConvergence,
         Settings.InitialRadiusTexels, Settings.FilterStrength, static_cast<int32>(Settings.Denoiser),
         static_cast<int32>(Settings.DebugDisplay));
+    Source += FString::Printf(TEXT("|%d|%.9g"), static_cast<int32>(Settings.OutputFormat), Settings.LDRWhiteLevel);
     Source += bAutoFitDepthToReceiverFilter ? TEXT("|AutoFitDepth1") : TEXT("|AutoFitDepth0");
 
     const auto AppendComponent = [&Source](const UActorComponent* ActorComponent)

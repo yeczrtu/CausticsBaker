@@ -15,15 +15,17 @@ UE 5.8 Editor 上で、明示した Caster からフォトンを追跡し、投�
 2. Place Actors から `Caustics Bake Region` をレベルへ配置します。
 3. Actor のローカル `+X` が投影方向、`Y` がテクスチャ U、`-Z` が V です。`Depth / Width / Height` で領域を設定します。
 4. `Light Actor` で Directional / Point / Spot Light を1つ選び、Caster の StaticMesh / ISM / HISM component を指定します。
-5. `Preview` でビューポート加算表示を確認し、`Bake` で `/Game/Caustics/T_Caustics_<ActorName>`（既定）へ RGBA16F Texture2D を作成します。
+5. `Preview` でビューポート加算表示を確認し、`Bake` で `/Game/Caustics/T_Caustics_<ActorName>`（既定）へ Texture2D を作成します。既定の出力は RGBA16F HDR です。
 
 `Caustics Quality & Actions` の `Preset` を `Custom (Preview and Bake)` にすると、`Photon Batches` と `Photons Per Batch` を変更できます。総フォトン数は両者の積です。Custom値はPreviewとBakeの両方に適用され、同じセクションの `Effective Preview / Effective Bake` に実際の総フォトン数と解像度が表示されます。標準Previewは `8 × 131,072 = 1,048,576`、標準Bakeは `32 × 524,288 = 16,777,216` フォトンです。
+
+`Output Format` は既定の `16-bit Float HDR (RGBA16F)` と、通常のカラーTextureとして保存する `8-bit LDR (BGRA8)` を選べます。8bit時はRGBを `8-bit White Level` で割って0～1へクランプし、sRGBへ符号化します。たとえばWhite Levelが2なら、線形HDR値2が8bitの255になります。AlphaのReceiver coverageはWhite Levelの影響を受けません。Previewは出力形式にかかわらずHDRのままです。
 
 `Receiver Filter (Optional)` は空のままで構いません。空の場合は投影ボックスと交差する ray-tracing-visible な StaticMesh / ISM / HISM が自動的に Receiver になり、投影方向の最前面へデカールのように投影されます。特定メッシュだけへ限定したい場合に限り、Receiver Filterへコンポーネントを追加します。Casterは自動Receiverから除外されます。
 
 明示した Receiver が現在の `Depth` より先にあっても、`Auto Fit Depth To Receiver Filter`（既定で有効）が `+X` 方向かつ `Width / Height` 内の Receiver まで Depth を自動拡張します。Preview は GPU readback で Receiver coverage を検証してから永続表示へ切り替わり、次の Preview、`Clear Preview`、またはレベル切替まで保持されます。
 
-生成パッケージは Dirty になりますが、自動保存されません。RGB は Receiver の色を含まない線形 HDR 照度、Alpha は Receiver coverage です。
+生成パッケージは Dirty になりますが、自動保存されません。RGB は Receiver の色を含まないコースティクス照度、Alpha は Receiver coverage です。RGBA16Fは線形HDRをそのまま保持し、BGRA8は指定White LevelでLDR化した通常のsRGBテクスチャになります。
 
 ## 光学設定
 

@@ -5,6 +5,7 @@
 #include "CausticsBakeTypes.h"
 #include "CausticsBakeRegion.h"
 #include "CausticsBakerEditorSubsystem.h"
+#include "CausticsTextureOutput.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -80,6 +81,43 @@ namespace
                     bWaitingForPreview = false;
                     return false;
                 }
+            }
+            if (bWaitingForLDRBake && (Status.State == ECausticsBakeJobState::Complete ||
+                Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
+            {
+                if (Status.State != ECausticsBakeJobState::Complete)
+                {
+                    Test->AddError(FString::Printf(TEXT("GPU 8-bit bake ended in %s: %s"),
+                        *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                }
+                else
+                {
+                    UTexture2D* Texture = BakeRegion->OutputTexture;
+                    Test->TestNotNull(TEXT("GPU 8-bit bake updated the output texture"), Texture);
+                    if (Texture)
+                    {
+                        Test->TestEqual(TEXT("GPU 8-bit output source format"), Texture->Source.GetFormat(), TSF_BGRA8);
+                        Test->TestEqual(TEXT("GPU 8-bit output compression"), Texture->CompressionSettings, TC_Default);
+                        Test->TestTrue(TEXT("GPU 8-bit output uses normal sRGB color sampling"), Texture->SRGB);
+
+                        bool bHasColor = false;
+                        bool bHasCoverage = false;
+                        if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
+                        {
+                            const FColor* Pixels = reinterpret_cast<const FColor*>(MipData);
+                            for (int32 Index = 0; Index < 256 * 256; ++Index)
+                            {
+                                bHasColor |= Pixels[Index].R > 0 || Pixels[Index].G > 0 || Pixels[Index].B > 0;
+                                bHasCoverage |= Pixels[Index].A > 0;
+                            }
+                            Texture->Source.UnlockMip(0);
+                        }
+                        Test->TestTrue(TEXT("GPU 8-bit output retains nonzero caustics color"), bHasColor);
+                        Test->TestTrue(TEXT("GPU 8-bit output retains receiver coverage alpha"), bHasCoverage);
+                    }
+                }
+                Cleanup();
+                return true;
             }
             if (Status.State == ECausticsBakeJobState::Complete ||
                 Status.State == ECausticsBakeJobState::Failed ||
@@ -180,6 +218,20 @@ namespace
                             PeakNeighborhoodFraction >= 0.2);
                     }
                 }
+                if (Status.State == ECausticsBakeJobState::Complete && BakeRegion->OutputTexture)
+                {
+                    BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::LDR8;
+                    BakeRegion->Settings.LDRWhiteLevel = 2.0f;
+                    if (!Baker->RequestBake(BakeRegion))
+                    {
+                        Test->AddError(FString::Printf(TEXT("Could not start GPU 8-bit overwrite bake: %s"),
+                            *Baker->GetStatus().Message.ToString()));
+                        Cleanup();
+                        return true;
+                    }
+                    bWaitingForLDRBake = true;
+                    return false;
+                }
                 Cleanup();
                 return true;
             }
@@ -233,6 +285,7 @@ namespace
         TArray<TWeakObjectPtr<AActor>> Actors;
         double Deadline = 0.0;
         bool bWaitingForPreview = true;
+        bool bWaitingForLDRBake = false;
         int32 PreviewHoldFrames = 0;
     };
 }
@@ -351,6 +404,35 @@ bool FCausticsTextureSettingsTest::RunTest(const FString&)
     TestEqual(TEXT("HDR compression"), Texture->CompressionSettings, TC_HDR);
     TestFalse(TEXT("Linear texture"), Texture->SRGB);
     TestEqual(TEXT("Clamp X"), Texture->AddressX, TA_Clamp);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsLDRTextureSettingsTest,
+    "CausticsBaker.Asset.LDR8TextureSettings", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCausticsLDRTextureSettingsTest::RunTest(const FString&)
+{
+    TArray<FFloat16Color> HDRPixels;
+    HDRPixels.Emplace(FLinearColor(2.0f, 0.5f, -1.0f, 0.25f));
+    HDRPixels.Emplace(FLinearColor(0.0f, 4.0f, 1.0f, 1.5f));
+    const TArray<FColor> LDRPixels = CausticsBaker::TextureOutput::ConvertToLDR8(HDRPixels, 2.0f);
+
+    TestEqual(TEXT("Converted pixel count"), LDRPixels.Num(), HDRPixels.Num());
+    TestEqual(TEXT("White-level scaling and negative clamp"), LDRPixels[0],
+        FLinearColor(1.0f, 0.25f, 0.0f, 0.25f).ToFColor(true));
+    TestEqual(TEXT("RGB and coverage clamp"), LDRPixels[1],
+        FLinearColor(0.0f, 1.0f, 0.5f, 1.0f).ToFColor(true));
+
+    UTexture2D* Texture = NewObject<UTexture2D>();
+    Texture->Source.Init(2, 1, 1, 1, TSF_BGRA8, reinterpret_cast<const uint8*>(LDRPixels.GetData()));
+    Texture->CompressionSettings = TC_Default;
+    Texture->SRGB = true;
+    Texture->AddressX = TA_Clamp;
+    Texture->AddressY = TA_Clamp;
+    TestEqual(TEXT("LDR source format"), Texture->Source.GetFormat(), TSF_BGRA8);
+    TestEqual(TEXT("Default color compression"), Texture->CompressionSettings, TC_Default);
+    TestTrue(TEXT("Normal color texture uses sRGB"), Texture->SRGB);
+    TestEqual(TEXT("Coverage alpha is retained"), LDRPixels[0].A,
+        FLinearColor(0.0f, 0.0f, 0.0f, 0.25f).ToFColor(true).A);
     return true;
 }
 
