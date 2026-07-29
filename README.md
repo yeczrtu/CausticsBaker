@@ -229,7 +229,7 @@ PreviewはScene DepthからWorld Positionを再構築し、`Decal-like`ではReg
 | --- | --- |
 | Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
 | Point／Spot Lightで結果が出ない | v1.2.8以降を使用し、`Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。`Max Optical Bounces`はMetalなら1以上、閉じたSolid Glassなら通常2以上にします。 |
-| Directional Lightで影の中のCasterから結果が出る | v1.2.8以降では投影ボックス上流端からCasterまでの遮蔽物をフォトンが判定します。遮蔽物を含むように投影ボックスを配置してください。なお、Caster自体に光が届いている場合、反射／屈折したコースティクスが通常の直接光の影へ入ること自体は物理的に正常です。 |
+| Directional Lightで影の中のCasterから結果が出る | v1.2.8以降ではフォトンの入射レイを光源側へ最低100 m（非常に大きいRegionでは4対角長）延長し、投影ボックス外の壁や天井もCasterより先に判定します。なお、Caster自体に光が届いている場合、反射／屈折したコースティクスが通常の直接光の影へ入ること自体は物理的に正常です。 |
 | `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
 | 大きいRegionや斜めの壁・天井で一部が消える | v1.2.6以降を使用し、`Viewport Projection`を`Decal-like`にします。細部が不足する場合はResolutionを上げるか、Regionを分割します。 |
 | Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |

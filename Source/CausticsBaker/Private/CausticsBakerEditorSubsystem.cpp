@@ -641,6 +641,14 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
                 }
             }
         }
+        // Begin the actual photon segment well upstream rather than issuing a
+        // second shadow-ray query at the caster. Every geometry on the same
+        // material RT path is then encountered in order, including walls or
+        // ceilings just outside the projection box.
+        Request.DirectionalIncidentTraceDistance = FMath::Max(10000.0f,
+            static_cast<float>(CaptureBounds.GetSize().Size()) * 4.0f);
+        DirectionalUpstreamDistance = FMath::Max(
+            DirectionalUpstreamDistance, Request.DirectionalIncidentTraceDistance);
     }
     Request.EmissionCenter = Request.CasterBoundsCenter - Request.LightDirection * DirectionalUpstreamDistance;
     if (Request.LightType != ECausticsRenderLightType::Directional)
@@ -648,25 +656,28 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
         // Unlike a Directional Light, a local light's source position is part
         // of the physical light path and must be retained by the capture view.
         CaptureBounds += FVector(Request.LightPosition);
+        CaptureBounds += FVector(Request.EmissionCenter);
     }
-    CaptureBounds += FVector(Request.EmissionCenter);
 
     const FBoxSphereBounds CaptureSphere(CaptureBounds);
     const float CaptureRadius = FMath::Max(100.0f, static_cast<float>(CaptureSphere.SphereRadius));
     const FVector CaptureCenter = CaptureSphere.Origin;
     const FVector CaptureLocation = CaptureCenter - FVector(1.0f, 0.0f, 0.0f) * CaptureRadius * 2.5f;
     CaptureOwner->SetActorLocationAndRotation(CaptureLocation, (CaptureCenter - CaptureLocation).Rotation());
-    SceneCapture->MaxViewDistanceOverride = CaptureRadius * 8.0f;
+    SceneCapture->MaxViewDistanceOverride = Request.LightType == ECausticsRenderLightType::Directional
+        ? FMath::Max(CaptureRadius * 8.0f, Request.DirectionalIncidentTraceDistance + CaptureRadius * 2.0f)
+        : CaptureRadius * 8.0f;
 
     const TCHAR* LightTypeName = Request.LightType == ECausticsRenderLightType::Directional
         ? TEXT("Directional")
         : (Request.LightType == ECausticsRenderLightType::Point ? TEXT("Point") : TEXT("Spot"));
     UE_LOG(LogCausticsBakerSubsystem, Display,
-        TEXT("Starting %s: Region=%s Light=%s Type=%s EffectiveRGB=(%.6g, %.6g, %.6g) Position=%s Direction=%s AttenuationRadius=%.3f MaxOpticalBounces=%d EmissionCenter=%s"),
+        TEXT("Starting %s: Region=%s Light=%s Type=%s EffectiveRGB=(%.6g, %.6g, %.6g) Position=%s Direction=%s AttenuationRadius=%.3f DirectionalIncidentDistance=%.3f MaxOpticalBounces=%d EmissionCenter=%s"),
         bPreview ? TEXT("Preview") : TEXT("Bake"), *Region->GetPathName(), *Light->GetPathName(), LightTypeName,
         Request.LightColor.X, Request.LightColor.Y, Request.LightColor.Z,
         *FVector(Request.LightPosition).ToCompactString(), *LightDirection.ToCompactString(),
-        Request.LightAttenuationRadius, Request.MaxBounces, *FVector(Request.EmissionCenter).ToCompactString());
+        Request.LightAttenuationRadius, Request.DirectionalIncidentTraceDistance, Request.MaxBounces,
+        *FVector(Request.EmissionCenter).ToCompactString());
 
     RenderJob = GetCausticsBakerRenderManager().Start(MoveTemp(Request));
     if (!RenderJob.IsValid())

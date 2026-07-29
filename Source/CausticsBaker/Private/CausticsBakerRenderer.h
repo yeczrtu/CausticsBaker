@@ -64,6 +64,7 @@ struct FCausticsRenderRequest
     float LightIntensity = 1.0f;
     float LightSourceRadius = 0.0f;
     float LightSourceAngleRadians = 0.0f;
+    float DirectionalIncidentTraceDistance = 0.0f;
     float LightAttenuationRadius = 1000.0f;
     float LightFalloffExponent = 8.0f;
     uint32 bInverseSquaredFalloff = 1u;

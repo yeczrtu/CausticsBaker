@@ -8,7 +8,6 @@
 #include "CausticsTextureOutput.h"
 #include "AssetCompilingManager.h"
 #include "Components/InstancedStaticMeshComponent.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor.h"
@@ -36,14 +35,12 @@ namespace
         FCausticsGpuBakeWaitCommand(FAutomationTestBase* InTest,
             UCausticsBakerEditorSubsystem* InSubsystem, ACausticsBakeRegion* InRegion,
             APointLight* InPointLight, ADirectionalLight* InDirectionalLight,
-            AStaticMeshActor* InDirectionalOccluder, TArray<TWeakObjectPtr<AActor>>&& InActors,
-            const double InDeadline)
+            TArray<TWeakObjectPtr<AActor>>&& InActors, const double InDeadline)
             : Test(InTest)
             , Subsystem(InSubsystem)
             , Region(InRegion)
             , PointLight(InPointLight)
             , DirectionalLight(InDirectionalLight)
-            , DirectionalOccluder(InDirectionalOccluder)
             , Actors(MoveTemp(InActors))
             , Deadline(InDeadline)
         {
@@ -234,22 +231,40 @@ namespace
                 }
 
                 ADirectionalLight* DirectionalLightActor = DirectionalLight.Get();
-                AStaticMeshActor* OccluderActor = DirectionalOccluder.Get();
-                if (!DirectionalLightActor || !OccluderActor)
+                UWorld* World = BakeRegion->GetWorld();
+                UStaticMesh* OccluderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+                if (!DirectionalLightActor || !World || !OccluderMesh)
                 {
-                    Test->AddError(TEXT("The Directional Light or its regression occluder was destroyed."));
+                    Test->AddError(TEXT("Could not prepare the Directional-Light occlusion regression."));
                     Cleanup();
                     return true;
                 }
 
-                // Regression: the former Directional emission plane started
-                // immediately in front of the caster. An opaque slab farther
-                // upstream was skipped, so a fully shadowed caster still
-                // emitted reflected/refracted caustics.
-                OccluderActor->SetActorHiddenInGame(false);
+                // Regression: the former Directional emission plane could
+                // start downstream of a shadow caster. This slab is outside
+                // the projection box, so the extended incident photon segment
+                // must encounter it before the fully shadowed glass.
+                FActorSpawnParameters SpawnParameters;
+                SpawnParameters.ObjectFlags |= RF_Transient;
+                SpawnParameters.bHideFromSceneOutliner = true;
+                const FVector IncidentDirection = DirectionalLightActor->GetLightComponent()
+                    ->GetDirection().GetSafeNormal();
+                const FVector CasterCenter = BakeRegion->GetActorTransform()
+                    .TransformPosition(FVector(150.0, 0.0, 0.0));
+                AStaticMeshActor* OccluderActor = World->SpawnActor<AStaticMeshActor>(
+                    CasterCenter - IncidentDirection * 200.0,
+                    IncidentDirection.Rotation(), SpawnParameters);
+                if (!OccluderActor)
+                {
+                    Test->AddError(TEXT("Could not spawn the Directional-Light occlusion slab."));
+                    Cleanup();
+                    return true;
+                }
+                Actors.Add(OccluderActor);
                 UStaticMeshComponent* OccluderComponent = OccluderActor->GetStaticMeshComponent();
-                OccluderComponent->SetVisibility(true, true);
-                OccluderComponent->MarkRenderStateDirty();
+                OccluderComponent->SetStaticMesh(OccluderMesh);
+                OccluderActor->SetActorScale3D(FVector(0.1, 5.0, 5.0));
+                OccluderComponent->SetVisibleInRayTracing(true);
                 BakeRegion->LightActor = DirectionalLightActor;
                 BakeRegion->Casters[0].OpticalMode = ECausticsOpticalMode::DielectricOverride;
                 BakeRegion->Casters[0].Tint = FLinearColor::White;
@@ -450,7 +465,6 @@ namespace
         TWeakObjectPtr<ACausticsBakeRegion> Region;
         TWeakObjectPtr<APointLight> PointLight;
         TWeakObjectPtr<ADirectionalLight> DirectionalLight;
-        TWeakObjectPtr<AStaticMeshActor> DirectionalOccluder;
         TArray<TWeakObjectPtr<AActor>> Actors;
         double Deadline = 0.0;
         bool bWaitingForPreview = true;
@@ -651,28 +665,23 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     APointLight* PointLightActor = World->SpawnActor<APointLight>(
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
-    AStaticMeshActor* DirectionalOccluderActor = World->SpawnActor<AStaticMeshActor>(
-        RegionTransform.TransformPosition(FVector(20.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ACausticsBakeRegion* Region = World->SpawnActor<ACausticsBakeRegion>(
         RegionTransform.GetLocation(), RegionTransform.Rotator(), SpawnParameters);
-    if (!CasterActor || !ReceiverActor || !LightActor || !PointLightActor || !DirectionalOccluderActor || !Region)
+    if (!CasterActor || !ReceiverActor || !LightActor || !PointLightActor || !Region)
     {
         AddError(TEXT("Could not spawn the GPU smoke-test actors."));
         if (CasterActor) World->DestroyActor(CasterActor, true);
         if (ReceiverActor) World->DestroyActor(ReceiverActor, true);
         if (LightActor) World->DestroyActor(LightActor, true);
         if (PointLightActor) World->DestroyActor(PointLightActor, true);
-        if (DirectionalOccluderActor) World->DestroyActor(DirectionalOccluderActor, true);
         if (Region) World->DestroyActor(Region, true);
         return false;
     }
 
     UStaticMeshComponent* CasterComponent = CasterActor->GetStaticMeshComponent();
     UStaticMeshComponent* ReceiverComponent = ReceiverActor->GetStaticMeshComponent();
-    UStaticMeshComponent* DirectionalOccluderComponent = DirectionalOccluderActor->GetStaticMeshComponent();
     CasterComponent->SetStaticMesh(SphereMesh);
     ReceiverComponent->SetStaticMesh(ReceiverMesh);
-    DirectionalOccluderComponent->SetStaticMesh(ReceiverMesh);
 
     UMaterial* ColoredTranslucentMaterial = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
     ColoredTranslucentMaterial->BlendMode = BLEND_Translucent;
@@ -699,12 +708,8 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     FAssetCompilingManager::Get().FinishAllCompilation();
     CasterComponent->SetMaterial(0, ColoredTranslucentMaterial);
     ReceiverActor->SetActorScale3D(FVector(0.1, 5.0, 5.0));
-    DirectionalOccluderActor->SetActorScale3D(FVector(0.1, 5.0, 5.0));
-    DirectionalOccluderActor->SetActorHiddenInGame(true);
-    DirectionalOccluderComponent->SetVisibility(false, true);
     CasterComponent->bVisibleInRayTracing = true;
     ReceiverComponent->bVisibleInRayTracing = true;
-    DirectionalOccluderComponent->bVisibleInRayTracing = true;
     LightActor->GetLightComponent()->SetIntensity(10.0f);
     UPointLightComponent* PointLightComponent = CastChecked<UPointLightComponent>(PointLightActor->GetLightComponent());
     PointLightComponent->SetMobility(EComponentMobility::Movable);
@@ -772,7 +777,6 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         World->DestroyActor(ReceiverActor, true);
         World->DestroyActor(LightActor, true);
         World->DestroyActor(PointLightActor, true);
-        World->DestroyActor(DirectionalOccluderActor, true);
         return false;
     }
     TestTrue(TEXT("Filtered receiver beyond Depth is auto-fitted before rendering"), Region->Depth > 230.0f);
@@ -783,10 +787,9 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     Actors.Add(ReceiverActor);
     Actors.Add(LightActor);
     Actors.Add(PointLightActor);
-    Actors.Add(DirectionalOccluderActor);
     ADD_LATENT_AUTOMATION_COMMAND(FCausticsGpuBakeWaitCommand(
-        this, Subsystem, Region, PointLightActor, LightActor, DirectionalOccluderActor,
-        MoveTemp(Actors), FPlatformTime::Seconds() + 180.0));
+        this, Subsystem, Region, PointLightActor, LightActor, MoveTemp(Actors),
+        FPlatformTime::Seconds() + 180.0));
     return true;
 }
 
