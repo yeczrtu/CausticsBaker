@@ -1,5 +1,7 @@
 # CausticsBaker for Unreal Engine 5.8
 
+**English** | [日本語](README_JA.md)
+
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
@@ -7,137 +9,137 @@
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracingによるフォトンマッピングでコースティクスを計算・テクスチャへベイクするEditor専用プラグインです。
+CausticsBaker is an editor-only plugin that computes caustics with hardware ray-traced photon mapping inside a region placed in the Unreal Engine 5.8 viewport, then bakes the result to a texture.
 
-投影先はボックス内のメッシュから自動検出されるため、Receiverを1つずつ設定しなくても、デカールに近い感覚でコースティクスを配置できます。ガラスなどの誘電体と、金属などの導体に対応しています。
+Projection targets are detected automatically from meshes inside the box, so you can place caustics much like a decal without assigning every Receiver individually. Both dielectric materials such as glass and conductors such as metals are supported.
 
 > [!IMPORTANT]
-> Renderer Private APIを使用するため、対応バージョンは**Unreal Engine 5.8のみ**です。UE 5.8以外では、意図しない動作を避けるためコンパイル時に停止します。
+> This plugin uses Renderer Private APIs and supports **Unreal Engine 5.8 only**. Compilation intentionally stops on any other UE version to prevent undefined behavior.
 
-## デモ
+## Demo
 
-### 操作デモ
+### Full workflow
 
-[![CausticsBaker 操作デモ](https://img.youtube.com/vi/zBamw2Hp5K4/maxresdefault.jpg)](https://youtu.be/zBamw2Hp5K4)
+[![CausticsBaker full workflow](https://img.youtube.com/vi/zBamw2Hp5K4/maxresdefault.jpg)](https://youtu.be/zBamw2Hp5K4)
 
-Regionの配置、ライトとCasterの設定、Preview、Bakeまでの一通りの操作を紹介します。
+This video covers the complete workflow: placing a Region, assigning the light and Casters, previewing, and baking.
 
-### ショートPV
+### Short showcase
 
 [![CausticsBaker for Unreal Engine 5.8](https://img.youtube.com/vi/hPBF_SYHiFo/maxresdefault.jpg)](https://youtu.be/hPBF_SYHiFo)
 
-## 主な機能
+## Features
 
-- Hardware Ray Tracingのmaterial pipelineを利用したフォトンマッピング
-- `Caustics Bake Region`の投影ボックスによるデカールライクな領域指定
-- Receiver指定不要の`Surface-aware Decal`、厳密確認用の`Strict Front Surface`、互換用の無制限2D投影
-- 投影ボックス内のReceiver自動検出と、任意のReceiver Filter
-- Directional／Point／Spot Lightからのフォトン放出
-- Static Mesh／Instanced Static Mesh／Hierarchical Instanced Static MeshのCasterとReceiver
-- GGX、Fresnel、Snell屈折、全反射、Beer–Lambert吸収、Russian Roulette
-- 最大4段の媒質スタックによる、複数の閉じた誘電体の追跡
-- SPPM密度推定と、Guideを利用するGPU à-trousデノイザ
-- Bake時に任意で追加できるIntel Open Image Denoise
-- ビューポートへのHDR Previewと、Raw／Guideなどのデバッグ表示
-- 線形HDR `RGBA16F`と通常のsRGB `BGRA8`出力
-- バッチ間Cancel、非同期GPU Readback、Bake結果の更新検出
-- エンジン改造およびCustom Primitive Dataの占有なし
+- Photon mapping through Unreal Engine's hardware ray-tracing material pipeline
+- Decal-like region placement with the `Caustics Bake Region` projection box
+- Receiver-free `Surface-aware Decal`, strict validation with `Strict Front Surface`, and legacy unrestricted 2D projection
+- Automatic Receiver detection inside the projection box, with an optional Receiver Filter
+- Photon emission from Directional, Point, and Spot Lights
+- Static Mesh, Instanced Static Mesh, and Hierarchical Instanced Static Mesh Casters and Receivers
+- GGX, Fresnel, Snell refraction, total internal reflection, Beer–Lambert absorption, and Russian roulette
+- A four-level medium stack for tracing multiple closed dielectrics
+- SPPM density estimation with a Guide-driven GPU à-trous denoiser
+- Optional Intel Open Image Denoise pass for Bake
+- HDR viewport Preview plus Raw, Guide, and other debug views
+- Linear HDR `RGBA16F` and standard sRGB `BGRA8` output
+- Cancellation between batches, asynchronous GPU readback, and stale-result detection
+- No engine modifications and no Custom Primitive Data allocation
 
-## 動作環境
+## Requirements
 
-| 項目 | 必要条件 |
+| Item | Requirement |
 | --- | --- |
 | Unreal Engine | **5.8** |
 | OS | Windows 64-bit |
 | RHI | DirectX 12 |
 | Shader Model | SM6 |
-| Ray Tracing | Hardware Ray Tracing、full ray-tracing shader pipeline |
-| GPU | DirectX Raytracing対応GPU |
-| 実行環境 | Editorのみ |
+| Ray Tracing | Hardware Ray Tracing with the full ray-tracing shader pipeline |
+| GPU | DirectX Raytracing-capable GPU |
+| Runtime | Editor only |
 
-プロジェクトの`Project Settings > Engine > Rendering`で、少なくとも次を有効にしてEditorを再起動してください。
+Enable at least the following under `Project Settings > Engine > Rendering`, then restart the Editor:
 
 - Default RHI: DirectX 12
 - D3D12 Targeted Shader Formats: Shader Model 6
 - Support Hardware Ray Tracing
-- UEから要求された場合はSupport Compute Skin Cache
+- Support Compute Skin Cache, if requested by UE
 
-CasterとReceiverに使用するコンポーネントでは、`Visible in Ray Tracing`も有効にします。
+Also enable `Visible in Ray Tracing` on components used as Casters or Receivers.
 
-## インストール
+## Installation
 
-### ビルド済みパッケージ
+### Prebuilt package
 
-1. Unreal Editorを終了します。
-2. 配布パッケージを`<Project>/Plugins/CausticsBaker`へ展開します。
-3. `CausticsBaker.uplugin`が`<Project>/Plugins/CausticsBaker/CausticsBaker.uplugin`にあることを確認します。
-4. プロジェクトを開き、必要ならPlugins画面で`Caustics Baker`を有効にして再起動します。
-5. 初回起動時のGlobal Shaderコンパイルが完了するまで待ちます。
+1. Close Unreal Editor.
+2. Extract the distribution package to `<Project>/Plugins/CausticsBaker`.
+3. Confirm that the descriptor is located at `<Project>/Plugins/CausticsBaker/CausticsBaker.uplugin`.
+4. Open the project. If necessary, enable `Caustics Baker` in the Plugins window and restart.
+5. Wait for the initial Global Shader compilation to finish.
 
 > [!WARNING]
-> 同じプロジェクトへ複数バージョンのCausticsBakerを同居させないでください。更新時はEditorを終了してから旧フォルダを置き換えます。
+> Do not install multiple versions of CausticsBaker in the same project. When updating, close the Editor before replacing the old plugin directory.
 
-### ソースから使用する場合
+### From source
 
-このリポジトリを`<Project>/Plugins/CausticsBaker`へ配置し、UE 5.8と互換性のあるVisual Studio 2022 C++ツールチェーンでEditorターゲットをビルドしてください。
+Place this repository at `<Project>/Plugins/CausticsBaker`, then build the Editor target with a Visual Studio 2022 C++ toolchain compatible with UE 5.8.
 
-## クイックスタート
+## Quick start
 
-1. Place Actorsから`Caustics Bake Region`をレベルへ配置します。
-2. Regionの`Depth / Width / Height`で投影ボックスをCasterと投影先へ重ねます。
-3. `Light Actor`でDirectional、Point、またはSpot Lightを1つ選択します。
-4. `Casters`へ要素を追加し、コースティクスを発生させるStatic Mesh／ISM／HISMコンポーネントを選択します。
-5. 必要に応じてCasterの`Optical Mode`と光学値を設定します。
-6. `Receiver Filter (Optional)`は、通常は空のままにします。
-7. 通常は`Viewport Projection`を`Surface-aware Decal`のままにして、`Preview`で結果を確認します。
-8. 品質と出力形式を選び、`Bake`を実行します。
-9. 生成されたTextureアセットをContent Browserから保存します。
+1. Place a `Caustics Bake Region` in the level from Place Actors.
+2. Use the Region's `Depth / Width / Height` to overlap the projection box with the Caster and the target surfaces.
+3. Assign one Directional, Point, or Spot Light in `Light Actor`.
+4. Add entries to `Casters` and select the Static Mesh, ISM, or HISM components that generate the caustics.
+5. Configure each Caster's `Optical Mode` and optical values when needed.
+6. Normally, leave `Receiver Filter (Optional)` empty.
+7. Keep `Viewport Projection` set to `Surface-aware Decal` in most cases, then click `Preview`.
+8. Choose the desired quality and output format, then click `Bake`.
+9. Save the generated Texture asset from the Content Browser.
 
-Regionのローカル軸は次のように使用されます。
+The Region's local axes are used as follows:
 
-| ローカル軸 | 意味 |
+| Local axis | Meaning |
 | --- | --- |
-| `+X` | 投影方向 |
-| `Y` | 出力テクスチャのU |
-| `-Z` | 出力テクスチャのV |
+| `+X` | Projection direction |
+| `Y` | Output texture U |
+| `-Z` | Output texture V |
 
-投影ボックスはRegion原点から`+X`方向へ伸びます。Guideはこの方向へレイを飛ばし、同じ投影UVで最初に見つかったReceiver 1層を採用します。
+The projection box extends from the Region origin along local `+X`. Guide rays travel in this direction and select the first Receiver layer found at each projected UV.
 
-### ビューポート投影モード
+### Viewport projection modes
 
-| Viewport Projection | 表示方法 |
+| Viewport Projection | Behavior |
 | --- | --- |
-| `Surface-aware Decal (Recommended)` | 既定値です。Receiver Filterを指定しなくても、Guideが採用した最前面の受光面へ自動投影します。面の平面距離と向きを照合するため、大きいボックスでも別の壁・床・天井へ同じ模様を重複投影しません。 |
-| `Strict Front Surface` | 許容幅と法線判定を狭くして、Guideと物理計算結果の対応を厳密に確認します。 |
-| `Unrestricted 2D Decal (Legacy)` | 同じ2Dマップをボックス内の全可視面へ無条件に繰り返します。演出的な投影向けで、重なる面や大きいボックスでは模様の複製・伸びが発生します。 |
+| `Surface-aware Decal (Recommended)` | The default. Even without a Receiver Filter, the result is projected automatically onto the frontmost receiving surface selected by the Guide. Plane distance and orientation checks prevent the same pattern from being duplicated onto unrelated walls, floors, or ceilings in a large box. |
+| `Strict Front Surface` | Uses tighter distance and normal tolerances for strict verification of the correspondence between the Guide and the physical simulation. |
+| `Unrestricted 2D Decal (Legacy)` | Repeats the same 2D map unconditionally on every visible surface in the box. This is useful for artistic projection, but overlapping surfaces and large boxes can duplicate or stretch the pattern. |
 
-出力は1枚の投影Texture2Dなので、同じ投影UVで奥行き方向に重なる面は別々の値を保持できません。既定の`Surface-aware Decal`はGuideが選んだ最前面だけを表示します。奥行きの異なる各面へ別々の物理結果が必要な場合は、投影方向を変えたRegionへ分割してください。
+The output is a single projected Texture2D, so surfaces that overlap in depth at the same projected UV cannot store independent values. The default `Surface-aware Decal` displays only the frontmost surface selected by the Guide. If surfaces at different depths need independent physical results, split them into Regions with different projection directions.
 
-斜面では投影1テクセルが受光面上で広がります。v1.2.9以降はX深度ではなくGuideの接平面距離で照合し、SPPM探索半径は投影面積に対応する`1/sqrt(cos)`で補正して上限を設けます。これにより、箱の拡大や浅い角度で探索範囲が無制限に広がることを防ぎます。Regionを大きくすると1テクセルが覆う実寸自体は大きくなるため、細部が必要ならResolutionを上げるかRegionを分割します。
+On an oblique surface, one projected texel covers a larger area on the Receiver. Since v1.2.9, matching uses the Guide tangent-plane distance rather than X depth, while the SPPM search radius is adjusted by a capped `1/sqrt(cos)` factor corresponding to projected area. This prevents the search footprint from growing without bound with a larger box or a shallow angle. A larger Region still increases the physical area covered by each texel, so raise Resolution or split the Region when fine detail is required.
 
-## Receiverの自動検出
+## Automatic Receiver detection
 
-`Receiver Filter (Optional)`が空の場合、投影ボックスと交差するray-tracing-visibleなStatic Mesh／ISM／HISMコンポーネントが自動的にReceiverになります。Casterへ登録したコンポーネントは自動Receiverから除外されます。
+When `Receiver Filter (Optional)` is empty, ray-tracing-visible Static Mesh, ISM, and HISM components intersecting the projection box automatically become Receivers. Components registered as Casters are excluded from automatic Receiver detection.
 
-Receiver Filterは、投影先を特定のメッシュだけへ制限したい場合に使用します。フィルタを1つでも追加すると自動検出ではなく明示フィルタモードになります。
+Use Receiver Filter when projection must be restricted to specific meshes. Adding any filter entry switches from automatic detection to explicit-filter mode.
 
-明示Receiverが現在のDepthより先にあっても、`Auto Fit Depth To Receiver Filter`が有効で、Width／Height内かつ`+X`方向にある場合はDepthを自動拡張します。
+If an explicitly selected Receiver lies beyond the current Depth, `Auto Fit Depth To Receiver Filter` automatically extends Depth when the Receiver is within Width and Height and lies along local `+X`.
 
-## Casterの光学設定
+## Caster optical settings
 
-| Optical Mode | 用途 |
+| Optical Mode | Purpose |
 | --- | --- |
-| `Auto from Material (Top Surface)` | Ray Tracing payloadの簡略化された最上位マテリアルから、光学タイプ、IOR／F0、roughness、tint、normalを取得します。`Optical Tint / F0`は取得色へ乗算され、色が取得できない場合のフォールバックにもなります。 |
-| `Dielectric Override (Glass)` | IOR、roughness、透過tint、吸収、Solid／Thinを明示するガラス向け設定です。 |
-| `Conductor Override (Metal)` | roughnessと反射F0色を明示する金属向け設定です。 |
+| `Auto from Material (Top Surface)` | Reads optical type, IOR/F0, roughness, tint, and normal from the simplified top-level material supplied in the ray-tracing payload. `Optical Tint / F0` multiplies the recovered color and acts as a fallback when no color is available. |
+| `Dielectric Override (Glass)` | Explicit glass settings for IOR, roughness, transmission tint, absorption, and Solid/Thin behavior. |
+| `Conductor Override (Metal)` | Explicit metal settings for roughness and reflected F0 color. |
 
-SubstrateのAutoモードは、Ray Tracing用に簡略化された最上位のSlabまたはSingle Layer Waterを使用します。任意のSubstrate積層をそのまま再現するものではありません。UE 5.8が透過色や有効な最上位ClosureをRT payloadへ渡さないマテリアルもあるため、色付きガラスを確実に再現する場合は`Dielectric Override (Glass)`を選び、`Optical Tint / F0`を設定してください。
+Substrate Auto mode uses the simplified topmost Slab or Single Layer Water representation available to ray tracing. It does not reproduce an arbitrary Substrate stack. Some UE 5.8 materials do not provide transmission color or a usable top closure in the RT payload; for reliable colored glass, select `Dielectric Override (Glass)` and set `Optical Tint / F0`.
 
-### シャープなガラスコースティクスの開始値
+### Starting settings for sharp glass caustics
 
-閉じたガラス球などでは、まず次の設定から調整することを推奨します。
+For a closed glass sphere or a similar object, start with the following settings:
 
-| 項目 | 開始値 |
+| Item | Starting value |
 | --- | --- |
 | Optical Mode | `Dielectric Override (Glass)` |
 | Thickness Mode | `Solid (Closed Mesh)` |
@@ -145,122 +147,122 @@ SubstrateのAutoモードは、Ray Tracing用に簡略化された最上位のSl
 | Roughness | `0.001` |
 | Optical Tint | White |
 | Absorption | `0` |
-| Denoiser | `None`で形状確認後、必要に応じて有効化 |
-| Initial Radius | `1.0 texel`から調整 |
+| Denoiser | Start with `None` to inspect the shape, then enable if needed |
+| Initial Radius | Start at `1.0 texel` |
 
-Directional Lightの`Source Angle`、Point／Spot Lightの`Source Radius`、Casterのroughnessが大きいほどコースティクスは広がります。鋭い模様を確認するときは、最初に光源サイズを0へ近づけてください。
+Larger `Source Angle` on a Directional Light, larger `Source Radius` on a Point or Spot Light, and higher Caster roughness all broaden the caustics. To inspect a sharp pattern, first reduce the light source size toward zero.
 
-Receiverが光学的な焦点位置から外れている場合、フォトン数を増やしても模様は鋭くなりません。球体などではReceiverの距離も前後へ動かして確認します。
+Increasing the photon count will not sharpen the pattern if the Receiver is outside the optical focus. For objects such as spheres, move the Receiver forward and backward to find the focal distance.
 
-## 品質設定
+## Quality settings
 
-| 実行 | 解像度 | バッチ数 | Photons / Batch | 総フォトン数 | Max Bounces | à-trous |
+| Operation | Resolution | Batches | Photons / Batch | Total photons | Max Bounces | à-trous |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 標準Preview | 512² | 8 | 131,072 | 1,048,576 | 6 | 2 |
-| Bakeプリセット | 2048² | 32 | 524,288 | 16,777,216 | 8 | 4 |
+| Standard Preview | 512² | 8 | 131,072 | 1,048,576 | 6 | 2 |
+| Bake preset | 2048² | 32 | 524,288 | 16,777,216 | 8 | 4 |
 
-`Preset`を`Custom (Preview and Bake)`にすると、PreviewとBakeの両方で次を変更できます。
+Set `Preset` to `Custom (Preview and Bake)` to change the following for both Preview and Bake:
 
-- Resolution: 256～4096の2の累乗へ丸められます
+- Resolution: rounded to a power of two from 256 to 4096
 - Photon Batches
 - Photons Per Batch
-- Max Optical Bounces（Receiverへの最終到達は数えません。Metalは通常1、閉じたSolid Glassは入射・出射で通常2以上）
+- Max Optical Bounces—the final arrival at a Receiver is not counted; Metal normally needs at least 1, while closed Solid Glass normally needs at least 2 for entry and exit
 - Atrous Iterations
 - Random Seed
 - SPPM Convergence
 - Initial Radius
 - Filter Strength
 
-総フォトン数は`Photon Batches × Photons Per Batch`です。値を増やすとノイズは減りますが、処理時間とGPU負荷も増えます。Initial Radiusを小さくすると細部を残しやすくなりますが、フォトン密度が不足するとノイズが増えます。
+The total photon count is `Photon Batches × Photons Per Batch`. Increasing these values reduces noise but also increases processing time and GPU load. A smaller Initial Radius preserves more detail but increases noise when photon density is insufficient.
 
-`Effective Preview / Effective Bake`には、現在の設定から実際に使用される解像度、総フォトン数、バウンス数、フィルタ反復数が表示されます。
+`Effective Preview / Effective Bake` displays the effective resolution, total photon count, bounce count, and filter iteration count derived from the current settings.
 
-`Preview`を押すと、以前のPreviewは計算開始前に自動で解除されます。新しい計算や事前検証が失敗した場合も古い結果を残さないため、影や旧配置に由来する結果を新しいPreviewと誤認しません。
+Clicking `Preview` automatically clears the previous Preview before calculation starts. If the new calculation or preflight validation fails, the old result is still removed so that a result caused by previous shadows or placement cannot be mistaken for the new Preview.
 
-## デノイズとデバッグ表示
+## Denoising and debug views
 
-- `GPU a-trous`: variance、normal、receiver depth、coverageを利用するedge-awareフィルタです。
-- `GPU a-trous + Intel OIDN`: Bake時のみ、a-trous後にUE同梱Intel OIDNを追加します。
-- `None`: 密度推定結果をそのまま確認します。細い集光線の評価に適しています。
+- `GPU a-trous`: An edge-aware filter guided by variance, normal, Receiver depth, and coverage.
+- `GPU a-trous + Intel OIDN`: Adds Unreal Engine's bundled Intel OIDN after à-trous for Bake only.
+- `None`: Displays the density-estimation result directly and is useful for evaluating fine concentration lines.
 
-`Debug Display`では`Final`、`Raw`、`Density Filtered`、`OIDN Result`、`Guide Depth`、`Guide Normal`、`Guide Coverage`、`Guide Receiver ID`を確認できます。
+`Debug Display` provides `Final`, `Raw`, `Density Filtered`, `OIDN Result`, `Guide Depth`, `Guide Normal`, `Guide Coverage`, and `Guide Receiver ID`.
 
-## 出力テクスチャ
+## Output textures
 
-既定の出力先は`/Game/Caustics/T_Caustics_<ActorName>`です。既存の同名Texture2Dがある場合は更新されます。
+The default output path is `/Game/Caustics/T_Caustics_<ActorName>`. An existing Texture2D with the same name is updated.
 
-| Output Format | Source | Compression | sRGB | 用途 |
+| Output Format | Source | Compression | sRGB | Purpose |
 | --- | --- | --- | --- | --- |
-| `16-bit Float HDR (RGBA16F)` | `TSF_RGBA16F` | `TC_HDR` | Off | 線形HDR照度を保持する既定形式 |
-| `8-bit LDR (BGRA8)` | `TSF_BGRA8` | `TC_Default` | On | 通常のカラーTextureとして扱うLDR形式 |
+| `16-bit Float HDR (RGBA16F)` | `TSF_RGBA16F` | `TC_HDR` | Off | Default format preserving linear HDR irradiance |
+| `8-bit LDR (BGRA8)` | `TSF_BGRA8` | `TC_Default` | On | LDR format handled as a standard color Texture |
 
-8bit出力では、RGBを`8-bit White Level`で割って0～1へクランプした後、sRGBへ符号化します。たとえばWhite Levelが2なら、線形HDR値2が8bitの255になります。白飛びする場合はWhite Levelを大きくしてください。
+For 8-bit output, RGB is divided by `8-bit White Level`, clamped to 0–1, then encoded to sRGB. For example, with a White Level of 2, a linear HDR value of 2 becomes 255 in the 8-bit texture. Increase White Level if the result is clipped to white.
 
-どちらの形式も次の仕様です。
+Both formats use the following conventions:
 
-- RGB: Receiverのマテリアル色を含まない、ライトとCaster由来のコースティクス照度
+- RGB: caustic irradiance derived from the light and Caster, without the Receiver material color
 - Alpha: Receiver coverage
-- Address X／Y: Clamp
+- Address X/Y: Clamp
 - Texture Group: Effects
-- Mip: 通常の自動生成
+- Mips: standard automatic generation
 
-生成パッケージはDirtyになりますが、自動保存されません。プラグインはruntime用Decal ActorやMaterialを生成しませんが、ベイクされたTexture2Dは通常のアセットとして別途マテリアルなどから利用できます。
+The generated package is marked Dirty but is not saved automatically. The plugin does not create a runtime Decal Actor or Material, but the baked Texture2D is a standard asset that can be used independently from a Material or another system.
 
-## 処理パイプライン
+## Processing pipeline
 
 <details>
-<summary>実装の概要を表示</summary>
+<summary>Show implementation overview</summary>
 
-1. 同じEditor Worldを参照する64×64の一時SceneCaptureを作成します。
-2. Capture専用ViewだけGIをPlugin、TranslucencyをRay Tracedへ設定します。
-3. 投影レイからReceiver Guideを作成し、depth、shading normal、Persistent Primitive ID、coverageを保存します。
-4. 1回のCaptureで1 photon batchを処理します。
-5. Directional LightはCaster境界のライト空間矩形、Point／Spot LightはCaster群を囲む立体角からサンプリングします。
-6. Photon RayGenでGGX、Fresnel、Snell屈折、全反射、吸収、媒質スタックを評価します。
-7. photon recordsをinteger atomic count、prefix scan、8×8 tile bin、scatterで整理します。
-8. World距離、normal、receiver IDを使うcone kernelでSPPM密度推定を更新します。
-9. 必要に応じてGPU à-trousとIntel OIDNを適用します。
-10. `FRHIGPUTextureReadback`完了後、Game ThreadでTexture2Dを更新します。
+1. Create a temporary 64×64 SceneCapture that references the same Editor World.
+2. Set only the capture View to Plugin GI and Ray Traced Translucency.
+3. Build the Receiver Guide from projection rays and store depth, shading normal, Persistent Primitive ID, and coverage.
+4. Process one photon batch per capture.
+5. Sample a Directional Light from the Caster bounds projected into a light-space rectangle, or a Point/Spot Light from the solid angle enclosing the Caster group.
+6. Evaluate GGX, Fresnel, Snell refraction, total internal reflection, absorption, and the medium stack in Photon RayGen.
+7. Organize photon records with an integer atomic count, prefix scan, 8×8 tile binning, and scatter.
+8. Update SPPM density estimation with a cone kernel using world distance, normal, and Receiver ID.
+9. Apply GPU à-trous and Intel OIDN when requested.
+10. After `FRHIGPUTextureReadback` completes, update the Texture2D on the Game Thread.
 
-PreviewはScene DepthからWorld Positionと幾何法線を再構築し、既定ではGuideの接平面距離・面の向き・coverageが一致する面へPre-PostProcessでHDR結果を加算します。`Unrestricted 2D Decal`を選んだ場合だけ、Region内の全可視面へ同じ2D値を繰り返します。メインビューポートのGI設定は変更しません。
+Preview reconstructs World Position and geometric normal from Scene Depth. By default, the HDR result is added in Pre-PostProcess only to surfaces matching the Guide's tangent-plane distance, orientation, and coverage. Only `Unrestricted 2D Decal` repeats the same 2D value on all visible surfaces inside the Region. The main viewport's GI settings are not modified.
 
 </details>
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状／メッセージ | 確認する項目 |
+| Symptom / message | What to check |
 | --- | --- |
-| Light Actorを選べない | コンポーネントではなく、Outliner上のDirectional／Point／Spot Light Actorを選びます。Detailsのeyedropperも使用できます。 |
-| Point／Spot Lightで結果が出ない | v1.2.8以降を使用し、`Attenuation Radius`がCasterへ届くこと、ライトとCasterの間に遮蔽物がないこと、反射／屈折後の光路が投影ボックス内のReceiverへ届くことを確認します。`Max Optical Bounces`はMetalなら1以上、閉じたSolid Glassなら通常2以上にします。 |
-| Directional Lightで影の中のCasterから結果が出る | v1.2.8以降ではフォトンの入射レイを光源側へ最低100 m（非常に大きいRegionでは4対角長）延長し、投影ボックス外の壁や天井もCasterより先に判定します。なお、Caster自体に光が届いている場合、反射／屈折したコースティクスが通常の直接光の影へ入ること自体は物理的に正常です。 |
-| `Receiver guide rays did not intersect...` | 投影ボックスがReceiverと交差しているか、Regionのローカル`+X`が投影先を向いているか確認します。 |
-| 大きいRegionで模様が別の壁・床・天井へ重複する／巨大な明部が出る | v1.2.9以降を使用し、`Viewport Projection`を`Surface-aware Decal`にします。`Unrestricted 2D Decal`は意図的に全深度へ同じマップを投影します。 |
-| 大きいRegionや斜めの壁・天井で細部が不足する | `Surface-aware Decal`を使用し、Resolutionを上げるか、必要な面ごとに投影方向を変えたRegionへ分割します。 |
-| Receiver IDが一致しない | Receiver Filter、`Visible in Ray Tracing`、コンポーネントの登録状態を確認します。不要ならReceiver Filterを空に戻します。 |
-| 半透明Casterが拒否される | `r.RayTracing.ExcludeTranslucent 0`を設定し、Casterの`Visible in Ray Tracing`を確認します。 |
-| 半透明コースティクスが白い | `Dielectric Override (Glass)`と目的の`Optical Tint / F0`を設定します。Autoで色を取得できる場合も、Tintは乗算色として利用できます。 |
-| ガラスの模様がぼやける | Glass Override、Solid、roughness、光源サイズ、Initial Radius、Receiverの焦点距離を確認します。最初はDenoiserをNoneにします。 |
-| 8bit出力が白飛びする | `8-bit White Level`を大きくします。HDR値がWhite Level以上のRGBは255へクランプされます。 |
-| Preview／OutputがOut of Dateになる | Region、ライト、Caster／Receiver、マテリアル、Bake設定の変更後はPreviewまたはBakeを再実行します。 |
-| Bake後もContent Browserへ保存されない | アセットは作成・更新されますが自動保存されません。Content BrowserまたはSave Allで保存します。 |
-| Pluginの重複エラーが出る | プロジェクトのPlugins以下にCausticsBakerが1つだけ存在する状態にします。 |
+| Cannot select Light Actor | Select a Directional, Point, or Spot Light Actor from the Outliner, not a component. The Details eyedropper can also be used. |
+| Point/Spot Light produces no result | Use v1.2.8 or later. Confirm that `Attenuation Radius` reaches the Caster, there is no occluder between the light and Caster, and the reflected or refracted path reaches a Receiver inside the projection box. Set `Max Optical Bounces` to at least 1 for Metal and normally at least 2 for closed Solid Glass. |
+| Directional Light produces caustics from a Caster in shadow | Since v1.2.8, the incoming photon ray extends at least 100 m toward the light—or four Region diagonals for a very large Region—so walls and ceilings outside the projection box can be tested before the Caster. If light does reach the Caster, however, reflected or refracted caustics entering an area shadowed from ordinary direct light can be physically correct. |
+| `Receiver guide rays did not intersect...` | Confirm that the projection box intersects the Receiver and that the Region's local `+X` points toward the target. |
+| A large Region duplicates the pattern onto another wall, floor, or ceiling, or creates a huge bright area | Use v1.2.9 or later and set `Viewport Projection` to `Surface-aware Decal`. `Unrestricted 2D Decal` intentionally projects the same map at every depth. |
+| Fine detail is missing on a large Region or an oblique wall/ceiling | Use `Surface-aware Decal`, raise Resolution, or split the setup into Regions with a different projection direction for each required surface. |
+| Receiver ID does not match | Check Receiver Filter, `Visible in Ray Tracing`, and component registration. Clear Receiver Filter if it is not needed. |
+| Translucent Caster is rejected | Set `r.RayTracing.ExcludeTranslucent 0` and verify the Caster's `Visible in Ray Tracing` setting. |
+| Translucent caustics are white | Select `Dielectric Override (Glass)` and set the intended `Optical Tint / F0`. Even when Auto can recover a color, Tint is applied as a multiplier. |
+| Glass pattern is blurry | Check Glass Override, Solid mode, roughness, light source size, Initial Radius, and the Receiver's focal distance. Start with Denoiser set to None. |
+| 8-bit output clips to white | Increase `8-bit White Level`. RGB values at or above White Level are clamped to 255. |
+| Preview or Output is marked Out of Date | Run Preview or Bake again after changing the Region, light, Caster/Receiver, material, or Bake settings. |
+| The asset is not saved after Bake | The asset is created or updated but is not saved automatically. Save it from the Content Browser or use Save All. |
+| Duplicate plugin error | Ensure that only one copy of CausticsBaker exists under the project's Plugins directories. |
 
-## v1の制限
+## v1 limitations
 
-- UE 5.8、Win64、Editor専用
-- 1 RegionにつきDirectional／Point／Spot Lightを1灯
-- Static Mesh、ISM、HISMのみ
-- Skeletal Mesh、Landscape、Geometry Collectionは対象外
-- Volumetric caustics、色分散は対象外
-- 物理計算用Guideと既定の`Surface-aware Decal`は、投影方向に重なる複数Receiver層の最前面1層のみ。奥行きの異なる各層にはRegionの分割が必要です
-- Receiver UVへの直接ベイクは対象外
-- Runtime Decal／Materialの自動生成は対象外
-- SubstrateはRay Tracing用に簡略化された最上位Surfaceのみ
-- NaniteはUEがTLASへ提供するnativeまたはfallback geometryを使用するため、ラスタライズ形状との完全一致は保証しません
+- UE 5.8, Win64, and Editor only
+- One Directional, Point, or Spot Light per Region
+- Static Mesh, ISM, and HISM only
+- No Skeletal Mesh, Landscape, or Geometry Collection support
+- No volumetric caustics or color dispersion
+- The physical Guide and the default `Surface-aware Decal` support only the frontmost Receiver layer when multiple Receivers overlap along the projection direction; use separate Regions for layers at different depths
+- No direct baking into Receiver UVs
+- No automatic runtime Decal or Material generation
+- Substrate uses only the simplified top-level Surface available to ray tracing
+- Nanite follows the native or fallback geometry supplied by UE to the TLAS, so an exact match with rasterized geometry is not guaranteed
 
-## ビルドとテスト
+## Build and tests
 
-PluginパッケージはUE 5.8のAutomationToolで作成できます。
+The plugin package can be built with the UE 5.8 AutomationTool:
 
 ```powershell
 & 'D:\Unreal\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat' BuildPlugin `
@@ -270,7 +272,7 @@ PluginパッケージはUE 5.8のAutomationToolで作成できます。
   -StrictIncludes
 ```
 
-Automation Testsは`CausticsBaker.*`へ登録されています。GPUテストにはDX12／SM6／Hardware Ray Tracingが有効なEditorプロジェクトが必要です。
+Automation Tests are registered under `CausticsBaker.*`. GPU tests require an Editor project with DX12, SM6, and Hardware Ray Tracing enabled.
 
 ```powershell
 & '<UE_5.8>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' '<Project>.uproject' `
@@ -279,24 +281,24 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.9では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、UEの測光単位を反映したPoint Light、Directional Lightの上流遮蔽物、2バウンスSolid Glass、失敗した再Previewの自動クリア、色付き半透明Caster、Surface-aware Decalの大規模Region補正を含む自動テストを確認しています。
+For v1.2.9, verified coverage includes Win64 BuildPlugin, PCD3D_SM6 Global Shader compilation, HDR/8-bit output, Point Lights using UE photometric units, upstream Directional Light occluders, two-bounce Solid Glass, automatic clearing after a failed re-Preview, colored translucent Casters, and large-Region compensation for Surface-aware Decal.
 
-## Issueを報告する場合
+## Reporting an issue
 
-再現性のある調査のため、可能であれば次を添付してください。
+For a reproducible investigation, please include the following when possible:
 
-- Unreal Engineの正確なバージョン
-- GPUとドライバーバージョン
-- Region、Light、Caster設定が分かるスクリーンショット
-- Output Logのエラー全文
-- 最小限の再現手順
+- Exact Unreal Engine version
+- GPU and driver version
+- Screenshot showing the Region, Light, and Caster settings
+- Complete error text from the Output Log
+- Minimal reproduction steps
 
-## ライセンス
+## License
 
-CausticsBakerの独自コードとドキュメントは[MIT License](LICENSE)で公開しています。
+Original CausticsBaker code and documentation are released under the [MIT License](LICENSE).
 
-- マテリアルレイトレーシング統合は、MIT Licenseの[historia-Inc/CustomRaytracingShader](https://github.com/historia-Inc/CustomRaytracingShader)を一部参考にしています。
-- 任意のBakeデノイザは、Unreal Engine 5.8が提供するApache-2.0のIntel Open Image Denoiseを利用します。OIDN本体はこのリポジトリやプラグインパッケージには含まれません。
-- Unreal Engine本体は含まれません。ビルドと利用には、別途ライセンスされたUnreal Engine 5.8が必要です。
+- The material ray-tracing integration was based in part on the MIT-licensed [historia-Inc/CustomRaytracingShader](https://github.com/historia-Inc/CustomRaytracingShader).
+- The optional Bake denoiser uses Apache-2.0-licensed Intel Open Image Denoise supplied by Unreal Engine 5.8. OIDN itself is not included in this repository or the plugin package.
+- Unreal Engine itself is not included. Building and using the plugin requires a separately licensed Unreal Engine 5.8 installation.
 
-著作権表示と各外部依存の条件は[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for copyright notices and the terms of external dependencies.
