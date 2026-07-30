@@ -101,13 +101,17 @@ void DensityEstimateCS(uint3 DispatchId : SV_DispatchThreadID)
     const float3 Center = ReconstructGuidePosition(Pixel, GuideValue.x);
     const float3 Normal = normalize(GuideValue.yzw);
     const float ProjectionCosine = abs(dot(Normal, normalize(ProjectionDirectionWorld)));
-    // Preserve the requested radius in surface texels. One projected texel
-    // covers more world-space distance as the receiver turns edge-on.
-    const float SurfaceInitialRadius = InitialRadiusWorld / max(0.15, ProjectionCosine);
+    // A projected texel covers 1/cos(theta) more surface area. The equivalent
+    // circular radius therefore scales by 1/sqrt(cos), not 1/cos. Clamp the
+    // degenerate grazing limit: a single 2D projection cannot represent an
+    // exactly edge-on receiver and an unbounded radius mixes distant faces.
+    const float SurfaceRadiusScale = rsqrt(max(0.16, ProjectionCosine));
+    const float SurfaceInitialRadius = InitialRadiusWorld * SurfaceRadiusScale;
     const float4 OldStats = SPPMStats[Pixel];
     const float OldN = BatchIndex == 0u ? 0.0 : OldStats.x;
     const float OldRadius = BatchIndex == 0u ? SurfaceInitialRadius : max(1.0e-4, OldStats.y);
     const float Radius2 = OldRadius * OldRadius;
+    const float PlaneTolerance = min(OldRadius * 0.2, max(0.5, ProjectionTexelWorldSize * 1.5));
     const int2 CenterBin = int2(Pixel / 8u);
     const int BinRadius = max(1, (int)ceil(OldRadius / max(1.0e-4, ProjectionTexelWorldSize * 8.0)));
 
@@ -132,7 +136,7 @@ void DensityEstimateCS(uint3 DispatchId : SV_DispatchThreadID)
                 const float3 Delta = Photon.Position - Center;
                 const float PlaneDistance = dot(Delta, Normal);
                 const float TangentDistance2 = max(0.0, dot(Delta, Delta) - PlaneDistance * PlaneDistance);
-                if (TangentDistance2 <= Radius2 && abs(PlaneDistance) <= OldRadius * 0.2)
+                if (TangentDistance2 <= Radius2 && abs(PlaneDistance) <= PlaneTolerance)
                 {
                     const float Kernel = max(0.0, 1.0 - sqrt(TangentDistance2) / OldRadius);
                     Phi += Photon.Power * Kernel * 3.0; // normalized 2D cone kernel

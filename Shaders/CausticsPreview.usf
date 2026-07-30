@@ -8,12 +8,29 @@ Texture2D<float> GuideCoverage;
 Texture2D SceneDepthTexture;
 SamplerState BilinearClampSampler;
 float4x4 WorldToRegion;
+float4x4 RegionToWorld;
 float3 RegionSize;
-float3 ProjectionDirectionWorld;
 float ProjectionTexelWorldSize;
 uint BakeResolution;
 uint DebugDisplay;
 uint ProjectionMode;
+
+float3 ReconstructGuidePosition(uint2 Pixel, float Depth)
+{
+    const float2 UV = (float2(Pixel) + 0.5) / BakeResolution;
+    const float3 Local = float3(Depth, (UV.x - 0.5) * RegionSize.y, (0.5 - UV.y) * RegionSize.z);
+    return mul(float4(Local, 1.0), RegionToWorld).xyz;
+}
+
+float4 SampleCoveredCaustics(float2 UV)
+{
+    float4 Result = CausticsTexture.SampleLevel(BilinearClampSampler, UV, 0);
+    // Alpha is receiver coverage. The viewport pass uses additive RGB
+    // blending, so coverage has to be applied explicitly to prevent a
+    // partially covered edge texel from being composited at full strength.
+    Result.rgb *= saturate(Result.a);
+    return Result;
+}
 
 float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
 {
@@ -21,6 +38,9 @@ float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
     const float DeviceZ = SceneDepthTexture.Load(int3(ScenePixel, 0)).r;
     if (DeviceZ <= 0.0) return 0.0;
     const float3 WorldPosition = DFHackToFloat(SvPositionToWorld(float4(SvPosition.xy, DeviceZ, 1.0)));
+    // Derivatives must be evaluated before per-pixel guide branches diverge.
+    const float3 SceneNormalUnnormalized = cross(ddx(WorldPosition), ddy(WorldPosition));
+    const float SceneNormalLength2 = dot(SceneNormalUnnormalized, SceneNormalUnnormalized);
     const float3 Local = mul(float4(WorldPosition, 1.0), WorldToRegion).xyz;
     if (Local.x < 0.0 || Local.x > RegionSize.x || abs(Local.y) > RegionSize.y * 0.5 || abs(Local.z) > RegionSize.z * 0.5)
     {
@@ -28,28 +48,42 @@ float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
     }
     const float2 BakeUV = float2(Local.y / RegionSize.y + 0.5, 0.5 - Local.z / RegionSize.z);
 
-    // Final/Raw/Filtered/OIDN output defaults to decal behavior: the 2D map
-    // is projected onto every visible surface inside the box. Guide debug
-    // modes and the optional strict mode retain front-layer matching.
-    if (ProjectionMode == 0u && DebugDisplay <= 3u)
+    // The unrestricted legacy mode deliberately repeats the same 2D texel on
+    // every depth layer. Surface-aware and strict modes below match the guide
+    // plane so a large box cannot stamp a wall caustic onto floors/ceilings.
+    if (ProjectionMode == 2u && DebugDisplay <= 3u)
     {
-        return CausticsTexture.SampleLevel(BilinearClampSampler, BakeUV, 0);
+        return SampleCoveredCaustics(BakeUV);
     }
 
     const uint2 BakePixel = min((uint2)(saturate(BakeUV) * BakeResolution), BakeResolution - 1u);
     const uint ReceiverId = GuideId.Load(int3(BakePixel, 0));
     if (ReceiverId == 0xffffffffu) return 0.0;
     const float4 G = Guide.Load(int3(BakePixel, 0));
-    const float ProjectionCosine = abs(dot(normalize(G.yzw), normalize(ProjectionDirectionWorld)));
-    const float SurfaceSlopeTolerance = ProjectionTexelWorldSize * 1.5 / max(0.05, ProjectionCosine);
-    const float DepthTolerance = max(0.5, max(RegionSize.x / BakeResolution * 2.0, SurfaceSlopeTolerance));
-    if (abs(Local.x - G.x) > DepthTolerance) return 0.0;
+    const float Coverage = GuideCoverage.Load(int3(BakePixel, 0));
+    if (Coverage <= 0.0) return 0.0;
+
+    const float3 GuideNormal = normalize(G.yzw);
+    const float3 GuidePosition = ReconstructGuidePosition(BakePixel, G.x);
+    const float PlaneToleranceScale = ProjectionMode == 1u ? 0.5 : 1.0;
+    const float PlaneTolerance = max(0.5, ProjectionTexelWorldSize * PlaneToleranceScale);
+    if (abs(dot(WorldPosition - GuidePosition, GuideNormal)) > PlaneTolerance) return 0.0;
+
+    // Plane distance alone is zero where two unlike planes intersect. A
+    // screen-space geometric normal prevents a narrow wall/ceiling seam from
+    // inheriting the other surface's caustic while allowing normal-mapped
+    // guide normals through a deliberately loose threshold.
+    if (SceneNormalLength2 > 1.0e-8)
+    {
+        const float3 SceneNormal = SceneNormalUnnormalized * rsqrt(SceneNormalLength2);
+        const float NormalThreshold = ProjectionMode == 1u ? 0.5 : 0.2;
+        if (abs(dot(SceneNormal, GuideNormal)) < NormalThreshold) return 0.0;
+    }
 
     if (DebugDisplay == 4u) return float4(G.xxx / max(1.0, RegionSize.x), 1.0);
     if (DebugDisplay == 5u) return float4(G.yzw * 0.5 + 0.5, 1.0);
     if (DebugDisplay == 6u)
     {
-        const float Coverage = GuideCoverage.Load(int3(BakePixel, 0));
         return float4(Coverage.xxx, 1.0);
     }
     if (DebugDisplay == 7u)
@@ -57,5 +91,5 @@ float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
         const float H = frac(ReceiverId * 0.61803398875);
         return float4(frac(H + float3(0.0, 0.333, 0.667)), 1.0);
     }
-    return CausticsTexture.SampleLevel(BilinearClampSampler, BakeUV, 0);
+    return SampleCoveredCaustics(BakeUV);
 }

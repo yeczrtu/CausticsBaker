@@ -44,7 +44,6 @@ RWStructuredBuffer<FPhotonRecord> PhotonRecords;
 float4x4 RegionToWorld;
 float4x4 WorldToRegion;
 float3 RegionSize;
-float3 ProjectionDirectionWorld;
 float ProjectionTexelWorldSize;
 float3 PreViewTranslation;
 uint OutputResolution;
@@ -106,15 +105,19 @@ float3 TransformVector(float3 V, float4x4 M)
     return mul(float4(V, 0.0), M).xyz;
 }
 
-float ComputeGuideDepthTolerance(float3 WorldNormal)
+float3 ReconstructGuidePosition(uint2 Pixel, float Depth)
 {
-    // A projected texel spans a much larger depth interval on a grazing
-    // surface. The previous fixed tolerance rejected correct hits whenever a
-    // large region was rotated toward a wall or ceiling.
-    const float ProjectionCosine = abs(dot(normalize(WorldNormal), normalize(ProjectionDirectionWorld)));
-    const float SurfaceSlopeTolerance = ProjectionTexelWorldSize * 1.5 / max(0.05, ProjectionCosine);
-    const float BaseTolerance = RegionSize.x / OutputResolution * 2.0;
-    return max(0.5, max(BaseTolerance, SurfaceSlopeTolerance));
+    const float2 UV = (float2(Pixel) + 0.5) / OutputResolution;
+    const float3 Local = float3(Depth, (UV.x - 0.5) * RegionSize.y, (0.5 - UV.y) * RegionSize.z);
+    return TransformPosition(Local, RegionToWorld);
+}
+
+float ComputeGuidePlaneTolerance()
+{
+    // Compare a photon with the tangent plane represented by its guide texel.
+    // Unlike an X-depth tolerance this remains stable on grazing receivers and
+    // does not grow without bound as the projection box gets larger.
+    return max(0.5, ProjectionTexelWorldSize);
 }
 
 uint GetPersistentPrimitiveId(FPackedMaterialClosestHitPayload Payload)
@@ -587,9 +590,10 @@ RAY_TRACING_ENTRY_RAYGEN(CausticsPhotonRG)
                     const uint2 Pixel = min((uint2)(UV * OutputResolution), OutputResolution - 1u);
                     const uint GuidePrimitive = GuideId[Pixel];
                     const float4 GuideValue = Guide[Pixel];
-                    const float GuideDepth = GuideValue.x;
-                    const float GuideDepthTolerance = ComputeGuideDepthTolerance(GuideValue.yzw);
-                    if (GuidePrimitive == PrimitiveId && abs(Local.x - GuideDepth) <= GuideDepthTolerance)
+                    const float3 GuideNormal = normalize(GuideValue.yzw);
+                    const float3 GuidePosition = ReconstructGuidePosition(Pixel, GuideValue.x);
+                    const float GuidePlaneDistance = abs(dot(Position - GuidePosition, GuideNormal));
+                    if (GuidePrimitive == PrimitiveId && GuidePlaneDistance <= ComputeGuidePlaneTolerance())
                     {
                         Result.Position = Position;
                         Result.ReceiverId = PrimitiveId;

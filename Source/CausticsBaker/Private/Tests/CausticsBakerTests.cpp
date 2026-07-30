@@ -538,7 +538,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsSettingsAndStateTest,
 bool FCausticsSettingsAndStateTest::RunTest(const FString&)
 {
     FCausticsBakeSettings Settings;
-    TestEqual(TEXT("Viewport projection defaults to decal-like all-surface display"),
+    TestEqual(TEXT("Viewport projection defaults to surface-aware decal display"),
         Settings.ProjectionMode, ECausticsProjectionMode::DecalLike);
     int32 Resolution, Batches, Photons, Bounces, Atrous;
     Settings.Resolve(true, Resolution, Batches, Photons, Bounces, Atrous);

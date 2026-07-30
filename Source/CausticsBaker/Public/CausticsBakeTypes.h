@@ -53,8 +53,9 @@ enum class ECausticsDebugDisplay : uint8
 UENUM(BlueprintType)
 enum class ECausticsProjectionMode : uint8
 {
-    DecalLike UMETA(DisplayName = "Decal-like (All Surfaces in Box)", ToolTip = "Projects the baked 2D caustics map onto every visible surface inside the box. Overlapping surfaces share the same projected texel, like an Unreal decal."),
-    GuideMatched UMETA(DisplayName = "Guide-matched (Front Surface Only)", ToolTip = "Shows the result only on the receiver surface selected by the projection guide. Use this to inspect the physically evaluated front layer without decal-style reprojection.")
+    DecalLike UMETA(DisplayName = "Surface-aware Decal (Recommended)", ToolTip = "Automatically projects onto the front receiver surface represented by the guide. No Receiver Filter is required, and depth or perpendicular surfaces do not inherit another surface's caustics."),
+    GuideMatched UMETA(DisplayName = "Strict Front Surface", ToolTip = "Uses tighter guide-plane and normal matching for inspecting the physically evaluated front receiver layer."),
+    UnrestrictedDecal UMETA(DisplayName = "Unrestricted 2D Decal (Legacy)", ToolTip = "Repeats the same baked 2D texel on every visible surface in the box. This can be useful for stylized projection, but large boxes and overlapping surfaces will produce duplicated or stretched caustics.")
 };
 
 UENUM(BlueprintType)
@@ -147,7 +148,7 @@ struct CAUSTICSBAKER_API FCausticsBakeSettings
     UPROPERTY(EditAnywhere, Category = "Filtering")
     ECausticsDenoiser Denoiser = ECausticsDenoiser::Atrous;
 
-    UPROPERTY(EditAnywhere, Category = "Projection", meta = (DisplayName = "Viewport Projection", ToolTip = "Decal-like projects the baked map onto all visible surfaces in the box. Guide-matched restricts the viewport result to the evaluated front receiver layer."))
+    UPROPERTY(EditAnywhere, Category = "Projection", meta = (DisplayName = "Viewport Projection", ToolTip = "Surface-aware Decal is the recommended automatic projection. Strict Front Surface tightens matching. Unrestricted 2D Decal intentionally repeats the map across every depth layer."))
     ECausticsProjectionMode ProjectionMode = ECausticsProjectionMode::DecalLike;
 
     UPROPERTY(EditAnywhere, Category = "Debug")

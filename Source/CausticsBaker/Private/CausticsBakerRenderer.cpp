@@ -78,7 +78,6 @@ public:
         SHADER_PARAMETER(FMatrix44f, RegionToWorld)
         SHADER_PARAMETER(FMatrix44f, WorldToRegion)
         SHADER_PARAMETER(FVector3f, RegionSize)
-        SHADER_PARAMETER(FVector3f, ProjectionDirectionWorld)
         SHADER_PARAMETER(float, ProjectionTexelWorldSize)
         SHADER_PARAMETER(FVector3f, PreViewTranslation)
         SHADER_PARAMETER(uint32, OutputResolution)
@@ -253,8 +252,8 @@ public:
         SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
         SHADER_PARAMETER_SAMPLER(SamplerState, BilinearClampSampler)
         SHADER_PARAMETER(FMatrix44f, WorldToRegion)
+        SHADER_PARAMETER(FMatrix44f, RegionToWorld)
         SHADER_PARAMETER(FVector3f, RegionSize)
-        SHADER_PARAMETER(FVector3f, ProjectionDirectionWorld)
         SHADER_PARAMETER(float, ProjectionTexelWorldSize)
         SHADER_PARAMETER(uint32, BakeResolution)
         SHADER_PARAMETER(uint32, DebugDisplay)
@@ -478,7 +477,6 @@ namespace
         RayParameters->RegionToWorld = Job.Request.RegionToWorld;
         RayParameters->WorldToRegion = Job.Request.WorldToRegion;
         RayParameters->RegionSize = Job.Request.RegionSize;
-        RayParameters->ProjectionDirectionWorld = Job.Request.ProjectionDirectionWorld;
         RayParameters->ProjectionTexelWorldSize = Job.Request.ProjectionTexelWorldSize;
         RayParameters->PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
         RayParameters->OutputResolution = Resolution;
@@ -796,8 +794,8 @@ void FCausticsBakerViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& G
     Parameters->SceneDepthTexture = SceneTextures.Depth.Resolve;
     Parameters->BilinearClampSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
     Parameters->WorldToRegion = PreviewJob->Request.WorldToRegion;
+    Parameters->RegionToWorld = PreviewJob->Request.RegionToWorld;
     Parameters->RegionSize = PreviewJob->Request.RegionSize;
-    Parameters->ProjectionDirectionWorld = PreviewJob->Request.ProjectionDirectionWorld;
     Parameters->ProjectionTexelWorldSize = PreviewJob->Request.ProjectionTexelWorldSize;
     Parameters->BakeResolution = PreviewJob->Request.Resolution;
     Parameters->DebugDisplay = static_cast<uint32>(PreviewJob->Request.DebugDisplay);

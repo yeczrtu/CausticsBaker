@@ -672,8 +672,11 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
         ? TEXT("Directional")
         : (Request.LightType == ECausticsRenderLightType::Point ? TEXT("Point") : TEXT("Spot"));
     UE_LOG(LogCausticsBakerSubsystem, Display,
-        TEXT("Starting %s: Region=%s Light=%s Type=%s EffectiveRGB=(%.6g, %.6g, %.6g) Position=%s Direction=%s AttenuationRadius=%.3f DirectionalIncidentDistance=%.3f MaxOpticalBounces=%d EmissionCenter=%s"),
-        bPreview ? TEXT("Preview") : TEXT("Bake"), *Region->GetPathName(), *Light->GetPathName(), LightTypeName,
+        TEXT("Starting %s: Region=%s SizeCm=(%.3f, %.3f, %.3f) Resolution=%d WorldTexel=%.6g ProjectionMode=%d Light=%s Type=%s EffectiveRGB=(%.6g, %.6g, %.6g) Position=%s Direction=%s AttenuationRadius=%.3f DirectionalIncidentDistance=%.3f MaxOpticalBounces=%d EmissionCenter=%s"),
+        bPreview ? TEXT("Preview") : TEXT("Bake"), *Region->GetPathName(),
+        Request.RegionSize.X, Request.RegionSize.Y, Request.RegionSize.Z, Request.Resolution,
+        Request.ProjectionTexelWorldSize, static_cast<int32>(Request.ProjectionMode),
+        *Light->GetPathName(), LightTypeName,
         Request.LightColor.X, Request.LightColor.Y, Request.LightColor.Z,
         *FVector(Request.LightPosition).ToCompactString(), *LightDirection.ToCompactString(),
         Request.LightAttenuationRadius, Request.DirectionalIncidentTraceDistance, Request.MaxBounces,
