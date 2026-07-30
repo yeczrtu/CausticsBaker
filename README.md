@@ -16,14 +16,15 @@ UE 5.8 Editorのビューポート上で領域を指定し、Hardware Ray Tracin
 
 ## デモ
 
-<!--
-GitHubのREADME編集画面へ動画をドラッグ＆ドロップし、生成された
-https://github.com/user-attachments/assets/...
-のURLで次の「操作デモ動画を準備中です。」という行を置き換えてください。
-URLを単独の行に置くと、GitHub上で動画プレイヤーとして表示されます。
--->
+### 操作デモ
 
-> 操作デモ動画を準備中です。
+[![CausticsBaker 操作デモ](https://img.youtube.com/vi/zBamw2Hp5K4/maxresdefault.jpg)](https://youtu.be/zBamw2Hp5K4)
+
+Regionの配置、ライトとCasterの設定、Preview、Bakeまでの一通りの操作を紹介します。
+
+### ショートPV
+
+[![CausticsBaker for Unreal Engine 5.8](https://img.youtube.com/vi/hPBF_SYHiFo/maxresdefault.jpg)](https://youtu.be/hPBF_SYHiFo)
 
 ## 主な機能
 
