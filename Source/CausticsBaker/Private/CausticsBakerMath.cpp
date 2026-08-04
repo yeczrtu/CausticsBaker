@@ -19,6 +19,34 @@ float CausticsBaker::Math::FresnelDielectric(float CosThetaI, const float EtaI, 
     return 0.5f * (Rs * Rs + Rp * Rp);
 }
 
+float CausticsBaker::Math::RefractiveIndexAtWavelength(const float ReferenceIOR, const float AbbeNumber,
+    const float WavelengthNm)
+{
+    constexpr float LambdaD = 0.58756f;
+    constexpr float LambdaF = 0.48613f;
+    constexpr float LambdaC = 0.65627f;
+    const float SafeIOR = FMath::Max(1.0f, ReferenceIOR);
+    const float SafeAbbe = FMath::Max(5.0f, AbbeNumber);
+    const float Lambda = FMath::Max(0.001f, WavelengthNm * 0.001f);
+    const float PrincipalDispersionDenominator =
+        1.0f / FMath::Square(LambdaF) - 1.0f / FMath::Square(LambdaC);
+    const float CauchyB = (SafeIOR - 1.0f) / (SafeAbbe * PrincipalDispersionDenominator);
+    return SafeIOR + CauchyB * (1.0f / FMath::Square(Lambda) - 1.0f / FMath::Square(LambdaD));
+}
+
+uint32 CausticsBaker::Math::PhotonRecordCountPerBatch(const uint32 PhotonsPerWavelength, const bool bUseDispersion)
+{
+    const uint64 Count = static_cast<uint64>(PhotonsPerWavelength) * (bUseDispersion ? 3ull : 1ull);
+    return static_cast<uint32>(FMath::Min<uint64>(Count, MAX_uint32));
+}
+
+uint32 CausticsBaker::Math::PhotonNormalizationCountPerBatch(const uint32 PhotonsPerWavelength)
+{
+    // RGB paths each transport only one wavelength. Keep the configured
+    // per-wavelength count as the energy denominator even when 3N records run.
+    return FMath::Max(1u, PhotonsPerWavelength);
+}
+
 bool CausticsBaker::Math::Refract(const FVector3f& Incident, const FVector3f& Normal, const float EtaI,
     const float EtaT, FVector3f& OutDirection)
 {

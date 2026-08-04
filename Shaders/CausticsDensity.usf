@@ -6,6 +6,7 @@ struct FPhotonRecord
     uint ReceiverId;
     float3 Power;
     uint BinIndex;
+    uint PackedNormal;
 };
 
 StructuredBuffer<FPhotonRecord> PhotonRecords;
@@ -44,6 +45,16 @@ float3 ReconstructGuidePosition(uint2 Pixel, float Depth)
     const float2 UV = (float2(Pixel) + 0.5) / OutputResolution;
     const float3 Local = float3(Depth, (UV.x - 0.5) * RegionSize.y, (0.5 - UV.y) * RegionSize.z);
     return mul(float4(Local, 1.0), RegionToWorld).xyz;
+}
+
+float3 UnpackNormalOct16(uint Packed)
+{
+    const uint2 Quantized = uint2(Packed & 0xffffu, Packed >> 16u);
+    const float2 F = float2(Quantized) * (2.0 / 65535.0) - 1.0;
+    float3 N = float3(F, 1.0 - abs(F.x) - abs(F.y));
+    const float T = saturate(-N.z);
+    N.xy += float2(N.x >= 0.0 ? -T : T, N.y >= 0.0 ? -T : T);
+    return normalize(N);
 }
 
 [numthreads(256, 1, 1)]
@@ -136,9 +147,11 @@ void DensityEstimateCS(uint3 DispatchId : SV_DispatchThreadID)
                 const float3 Delta = Photon.Position - Center;
                 const float PlaneDistance = dot(Delta, Normal);
                 const float TangentDistance2 = max(0.0, dot(Delta, Delta) - PlaneDistance * PlaneDistance);
-                if (TangentDistance2 <= Radius2 && abs(PlaneDistance) <= PlaneTolerance)
+                const float NormalAgreement = dot(UnpackNormalOct16(Photon.PackedNormal), Normal);
+                if (TangentDistance2 <= Radius2 && abs(PlaneDistance) <= PlaneTolerance && NormalAgreement > 0.5)
                 {
-                    const float Kernel = max(0.0, 1.0 - sqrt(TangentDistance2) / OldRadius);
+                    const float NormalWeight = saturate((NormalAgreement - 0.5) * 2.0);
+                    const float Kernel = max(0.0, 1.0 - sqrt(TangentDistance2) / OldRadius) * NormalWeight;
                     Phi += Photon.Power * Kernel * 3.0; // normalized 2D cone kernel
                     M += Kernel;
                 }

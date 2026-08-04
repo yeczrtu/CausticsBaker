@@ -9,10 +9,12 @@
 #include "AssetCompilingManager.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
+#include "Engine/SpotLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Texture2D.h"
@@ -34,13 +36,17 @@ namespace
     public:
         FCausticsGpuBakeWaitCommand(FAutomationTestBase* InTest,
             UCausticsBakerEditorSubsystem* InSubsystem, ACausticsBakeRegion* InRegion,
-            APointLight* InPointLight, ADirectionalLight* InDirectionalLight,
+            APointLight* InPointLight, ASpotLight* InSpotLight, ADirectionalLight* InDirectionalLight,
+            AStaticMeshActor* InCasterActor, AStaticMeshActor* InReceiverActor,
             TArray<TWeakObjectPtr<AActor>>&& InActors, const double InDeadline)
             : Test(InTest)
             , Subsystem(InSubsystem)
             , Region(InRegion)
             , PointLight(InPointLight)
+            , SpotLight(InSpotLight)
             , DirectionalLight(InDirectionalLight)
+            , CasterActor(InCasterActor)
+            , ReceiverActor(InReceiverActor)
             , Actors(MoveTemp(InActors))
             , Deadline(InDeadline)
         {
@@ -89,6 +95,242 @@ namespace
                     bWaitingForPreview = false;
                     return false;
                 }
+            }
+            if (bWaitingForDispersionBake && (Status.State == ECausticsBakeJobState::Complete ||
+                Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
+            {
+                if (Status.State != ECausticsBakeJobState::Complete)
+                {
+                    Test->AddError(FString::Printf(TEXT("GPU dispersion bake ended in %s: %s"),
+                        *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+
+                UTexture2D* Texture = BakeRegion->OutputTexture;
+                Test->TestNotNull(TEXT("GPU dispersion bake updated the output texture"), Texture);
+                double ChannelEnergy[3] = { 0.0, 0.0, 0.0 };
+                FVector2D WeightedPosition[3] = { FVector2D::ZeroVector, FVector2D::ZeroVector, FVector2D::ZeroVector };
+                if (Texture && Texture->Source.GetFormat() == TSF_RGBA16F)
+                {
+                    if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
+                    {
+                        const FFloat16Color* Pixels = reinterpret_cast<const FFloat16Color*>(MipData);
+                        for (int32 Index = 0; Index < 256 * 256; ++Index)
+                        {
+                            const double Values[3] = {
+                                FMath::Max(0.0f, Pixels[Index].R.GetFloat()),
+                                FMath::Max(0.0f, Pixels[Index].G.GetFloat()),
+                                FMath::Max(0.0f, Pixels[Index].B.GetFloat()) };
+                            const FVector2D PixelPosition(Index % 256, Index / 256);
+                            for (int32 Channel = 0; Channel < 3; ++Channel)
+                            {
+                                ChannelEnergy[Channel] += Values[Channel];
+                                WeightedPosition[Channel] += PixelPosition * Values[Channel];
+                            }
+                        }
+                        Texture->Source.UnlockMip(0);
+                    }
+                }
+                FVector2D Centroid[3];
+                for (int32 Channel = 0; Channel < 3; ++Channel)
+                {
+                    Centroid[Channel] = ChannelEnergy[Channel] > 0.0
+                        ? WeightedPosition[Channel] / ChannelEnergy[Channel] : FVector2D::ZeroVector;
+                    Test->TestTrue(FString::Printf(TEXT("Dispersion channel %d has nonzero finite energy"), Channel),
+                        ChannelEnergy[Channel] > 1.0e-8 && FMath::IsFinite(ChannelEnergy[Channel]));
+                }
+                const FVector2D RedToBlue = Centroid[2] - Centroid[0];
+                const double RedBlueDistance = RedToBlue.Size();
+                const double RedBlueDistanceSquared = RedToBlue.SizeSquared();
+                const double GreenAlongRedBlue = RedBlueDistanceSquared > 1.0e-12
+                    ? FVector2D::DotProduct(Centroid[1] - Centroid[0], RedToBlue) / RedBlueDistanceSquared : 0.0;
+                Test->AddInfo(FString::Printf(
+                    TEXT("RGB dispersion centroids: R=(%.2f,%.2f), G=(%.2f,%.2f), B=(%.2f,%.2f), R-B=%.3f px"),
+                    Centroid[0].X, Centroid[0].Y, Centroid[1].X, Centroid[1].Y,
+                    Centroid[2].X, Centroid[2].Y, RedBlueDistance));
+                Test->TestTrue(TEXT("Dispersive glass separates red and blue by at least one texel"),
+                    RedBlueDistance >= 1.0);
+                Test->TestTrue(TEXT("The green centroid lies between the red and blue centroids"),
+                    GreenAlongRedBlue > 0.0 && GreenAlongRedBlue < 1.0);
+
+                AStaticMeshActor* Caster = CasterActor.Get();
+                AStaticMeshActor* Receiver = ReceiverActor.Get();
+                UWorld* World = BakeRegion->GetWorld();
+                UStaticMesh* SlabMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+                if (!Caster || !Receiver || !World || !SlabMesh)
+                {
+                    Test->AddError(TEXT("Could not prepare the overlapping-solid medium-stack regression."));
+                    Cleanup();
+                    return true;
+                }
+
+                FActorSpawnParameters SpawnParameters;
+                SpawnParameters.ObjectFlags |= RF_Transient;
+                SpawnParameters.bHideFromSceneOutliner = true;
+                const FTransform RegionTransform = BakeRegion->GetActorTransform();
+                AStaticMeshActor* OverlapCaster = World->SpawnActor<AStaticMeshActor>(
+                    RegionTransform.TransformPosition(FVector(190.0, 0.0, 0.0)),
+                    RegionTransform.Rotator(), SpawnParameters);
+                if (!OverlapCaster)
+                {
+                    Test->AddError(TEXT("Could not spawn the second overlapping solid caster."));
+                    Cleanup();
+                    return true;
+                }
+                OverlappingCasterActor = OverlapCaster;
+                Actors.Add(OverlapCaster);
+
+                UStaticMeshComponent* FirstCasterComponent = Caster->GetStaticMeshComponent();
+                UStaticMeshComponent* OverlapCasterComponent = OverlapCaster->GetStaticMeshComponent();
+                FirstCasterComponent->SetStaticMesh(SlabMesh);
+                OverlapCasterComponent->SetStaticMesh(SlabMesh);
+                Caster->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                    RegionTransform.TransformPosition(FVector(150.0, 0.0, 0.0)), FVector(1.0, 3.0, 3.0)));
+                OverlapCaster->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                    RegionTransform.TransformPosition(FVector(190.0, 0.0, 0.0)), FVector(1.0, 3.0, 3.0)));
+                Receiver->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                    RegionTransform.TransformPosition(FVector(350.0, 0.0, 0.0)), FVector(0.1, 5.0, 5.0)));
+                FirstCasterComponent->SetVisibleInRayTracing(true);
+                OverlapCasterComponent->SetVisibleInRayTracing(true);
+
+                // Along the light path the boundaries are A-enter, B-enter,
+                // A-exit, B-exit. A plain LIFO stack incorrectly pops B at
+                // A-exit. The different absorption colors make that error
+                // observable: the correct path spends 40 cm in A and 100 cm
+                // in B; the old path spent 80 cm in A and only 60 cm in B.
+                FCausticsCasterEntry& FirstEntry = BakeRegion->Casters[0];
+                FirstEntry.OpticalMode = ECausticsOpticalMode::DielectricOverride;
+                FirstEntry.ThicknessMode = ECausticsThicknessMode::Solid;
+                FirstEntry.IndexOfRefraction = 1.3f;
+                FirstEntry.bEnableDispersion = false;
+                FirstEntry.AbbeNumber = 58.0f;
+                FirstEntry.Roughness = 0.001f;
+                FirstEntry.Tint = FLinearColor::White;
+                FirstEntry.Absorption = FLinearColor(0.01f, 0.0f, 0.0f, 0.0f);
+                FCausticsCasterEntry SecondEntry = FirstEntry;
+                SecondEntry.Component.OverrideComponent = OverlapCasterComponent;
+                SecondEntry.IndexOfRefraction = 1.7f;
+                SecondEntry.Absorption = FLinearColor(0.0f, 0.0f, 0.01f, 0.0f);
+                BakeRegion->Casters.Add(SecondEntry);
+                BakeRegion->Settings.Denoiser = ECausticsDenoiser::None;
+                BakeRegion->Settings.AtrousIterations = 0;
+                BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::HDR16F;
+                BakeRegion->Settings.MaxBounces = 4;
+                FirstCasterComponent->MarkRenderStateDirty();
+                OverlapCasterComponent->MarkRenderStateDirty();
+                Receiver->GetStaticMeshComponent()->MarkRenderStateDirty();
+                FlushRenderingCommands();
+
+                bWaitingForDispersionBake = false;
+                bWaitingForOverlappingCasterBake = true;
+                if (!Baker->RequestBake(BakeRegion))
+                {
+                    Test->AddError(FString::Printf(TEXT("Could not start overlapping-solid bake: %s"),
+                        *Baker->GetStatus().Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+                return false;
+            }
+            if (bWaitingForOverlappingCasterBake && (Status.State == ECausticsBakeJobState::Complete ||
+                Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
+            {
+                if (Status.State != ECausticsBakeJobState::Complete)
+                {
+                    Test->AddError(FString::Printf(TEXT("GPU overlapping-solid bake ended in %s: %s"),
+                        *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+
+                UTexture2D* Texture = BakeRegion->OutputTexture;
+                Test->TestNotNull(TEXT("GPU overlapping-solid bake updated the output texture"), Texture);
+                bool bRadianceIsFinite = true;
+                bool bHasCoverage = false;
+                double ChannelEnergy[3] = { 0.0, 0.0, 0.0 };
+                if (Texture && Texture->Source.GetFormat() == TSF_RGBA16F)
+                {
+                    if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
+                    {
+                        const FFloat16Color* Pixels = reinterpret_cast<const FFloat16Color*>(MipData);
+                        for (int32 Index = 0; Index < 256 * 256; ++Index)
+                        {
+                            const float R = Pixels[Index].R.GetFloat();
+                            const float G = Pixels[Index].G.GetFloat();
+                            const float B = Pixels[Index].B.GetFloat();
+                            bRadianceIsFinite &= FMath::IsFinite(R) && FMath::IsFinite(G) && FMath::IsFinite(B);
+                            if (FMath::IsFinite(R) && FMath::IsFinite(G) && FMath::IsFinite(B))
+                            {
+                                ChannelEnergy[0] += FMath::Max(0.0f, R);
+                                ChannelEnergy[1] += FMath::Max(0.0f, G);
+                                ChannelEnergy[2] += FMath::Max(0.0f, B);
+                            }
+                            bHasCoverage |= Pixels[Index].A.GetFloat() > 0.0f;
+                        }
+                        Texture->Source.UnlockMip(0);
+                    }
+                }
+                Test->TestEqual(TEXT("GPU overlapping-solid output source format"),
+                    Texture ? Texture->Source.GetFormat() : TSF_Invalid, TSF_RGBA16F);
+                Test->TestTrue(TEXT("GPU overlapping-solid output is finite"), bRadianceIsFinite);
+                Test->TestTrue(TEXT("GPU overlapping-solid output has receiver coverage"), bHasCoverage);
+                Test->TestTrue(TEXT("GPU overlapping-solid output has nonzero RGB energy"),
+                    ChannelEnergy[0] > 1.0e-8 && ChannelEnergy[1] > 1.0e-8 && ChannelEnergy[2] > 1.0e-8);
+                Test->AddInfo(FString::Printf(
+                    TEXT("Overlapping media energy: R=%.6g, G=%.6g, B=%.6g, R/B=%.3f"),
+                    ChannelEnergy[0], ChannelEnergy[1], ChannelEnergy[2],
+                    ChannelEnergy[2] > 0.0 ? ChannelEnergy[0] / ChannelEnergy[2] : 0.0));
+                Test->TestTrue(TEXT("Exiting the buried first caster keeps the second medium active"),
+                    ChannelEnergy[0] > ChannelEnergy[2] * 1.5);
+
+                AStaticMeshActor* Caster = CasterActor.Get();
+                AStaticMeshActor* Receiver = ReceiverActor.Get();
+                UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+                if (!Caster || !Receiver || !SphereMesh)
+                {
+                    Test->AddError(TEXT("Could not restore the polished-glass scene after the overlap regression."));
+                    Cleanup();
+                    return true;
+                }
+                BakeRegion->Casters.SetNum(1);
+                if (AStaticMeshActor* OverlapCaster = OverlappingCasterActor.Get())
+                {
+                    if (UWorld* World = OverlapCaster->GetWorld())
+                    {
+                        World->DestroyActor(OverlapCaster, true);
+                    }
+                }
+                OverlappingCasterActor.Reset();
+
+                const FTransform RegionTransform = BakeRegion->GetActorTransform();
+                Caster->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
+                Caster->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                    RegionTransform.TransformPosition(FVector(150.0, 0.0, 0.0)), FVector::OneVector));
+                Receiver->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                    RegionTransform.TransformPosition(FVector(230.0, 0.0, 0.0)), FVector(0.1, 5.0, 5.0)));
+                BakeRegion->Casters[0].IndexOfRefraction = 1.5f;
+                BakeRegion->Casters[0].bEnableDispersion = false;
+                BakeRegion->Casters[0].AbbeNumber = 58.0f;
+                BakeRegion->Casters[0].Absorption = FLinearColor::Transparent;
+                BakeRegion->Settings.Denoiser = ECausticsDenoiser::None;
+                BakeRegion->Settings.AtrousIterations = 0;
+                BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::LDR8;
+                BakeRegion->Settings.LDRWhiteLevel = 2.0f;
+                Caster->GetStaticMeshComponent()->MarkRenderStateDirty();
+                Receiver->GetStaticMeshComponent()->MarkRenderStateDirty();
+                FlushRenderingCommands();
+
+                bWaitingForOverlappingCasterBake = false;
+                bWaitingForLDRBake = true;
+                if (!Baker->RequestBake(BakeRegion))
+                {
+                    Test->AddError(FString::Printf(TEXT("Could not start GPU 8-bit overwrite bake: %s"),
+                        *Baker->GetStatus().Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+                return false;
             }
             if (bWaitingForLDRBake && (Status.State == ECausticsBakeJobState::Complete ||
                 Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
@@ -230,6 +472,68 @@ namespace
                     return true;
                 }
 
+                ASpotLight* SpotLightActor = SpotLight.Get();
+                AStaticMeshActor* Caster = CasterActor.Get();
+                if (!SpotLightActor || !Caster)
+                {
+                    Test->AddError(TEXT("The Spot Light or caster was destroyed before its GPU regression bake."));
+                    Cleanup();
+                    return true;
+                }
+                const FVector SpotLocation = BakeRegion->GetActorTransform().TransformPosition(FVector(80.0, 0.0, 0.0));
+                SpotLightActor->SetActorLocation(SpotLocation);
+                SpotLightActor->SetActorRotation((Caster->GetActorLocation() - SpotLocation).Rotation());
+                BakeRegion->LightActor = SpotLightActor;
+                bWaitingForPointLightBake = false;
+                bWaitingForSpotLightBake = true;
+                FlushRenderingCommands();
+                if (!Baker->RequestBake(BakeRegion))
+                {
+                    Test->AddError(FString::Printf(TEXT("Could not start GPU Spot Light bake: %s"),
+                        *Baker->GetStatus().Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+                return false;
+            }
+            if (bWaitingForSpotLightBake && (Status.State == ECausticsBakeJobState::Complete ||
+                Status.State == ECausticsBakeJobState::Failed || Status.State == ECausticsBakeJobState::Cancelled))
+            {
+                if (Status.State != ECausticsBakeJobState::Complete)
+                {
+                    Test->AddError(FString::Printf(TEXT("GPU Spot Light bake ended in %s: %s"),
+                        *CausticsBaker::JobStateToText(Status.State).ToString(), *Status.Message.ToString()));
+                    Cleanup();
+                    return true;
+                }
+
+                UTexture2D* Texture = BakeRegion->OutputTexture;
+                bool bHasColor = false;
+                bool bHasCoverage = false;
+                bool bColorIsFinite = true;
+                if (Texture && Texture->Source.GetFormat() == TSF_RGBA16F)
+                {
+                    if (const uint8* MipData = Texture->Source.LockMipReadOnly(0))
+                    {
+                        const FFloat16Color* Pixels = reinterpret_cast<const FFloat16Color*>(MipData);
+                        for (int32 Index = 0; Index < 256 * 256; ++Index)
+                        {
+                            const float R = Pixels[Index].R.GetFloat();
+                            const float G = Pixels[Index].G.GetFloat();
+                            const float B = Pixels[Index].B.GetFloat();
+                            bColorIsFinite &= FMath::IsFinite(R) && FMath::IsFinite(G) && FMath::IsFinite(B);
+                            bHasColor |= R > 1.0e-8f || G > 1.0e-8f || B > 1.0e-8f;
+                            bHasCoverage |= Pixels[Index].A.GetFloat() > 0.0f;
+                        }
+                        Texture->Source.UnlockMip(0);
+                    }
+                }
+                Test->TestEqual(TEXT("GPU Spot Light output source format"),
+                    Texture ? Texture->Source.GetFormat() : TSF_Invalid, TSF_RGBA16F);
+                Test->TestTrue(TEXT("GPU Spot Light output is finite"), bColorIsFinite);
+                Test->TestTrue(TEXT("GPU Spot Light produces nonzero caustics"), bHasColor);
+                Test->TestTrue(TEXT("GPU Spot Light retains receiver coverage"), bHasCoverage);
+
                 ADirectionalLight* DirectionalLightActor = DirectionalLight.Get();
                 UWorld* World = BakeRegion->GetWorld();
                 UStaticMesh* OccluderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -269,7 +573,7 @@ namespace
                 BakeRegion->Casters[0].OpticalMode = ECausticsOpticalMode::DielectricOverride;
                 BakeRegion->Casters[0].Tint = FLinearColor::White;
                 BakeRegion->Settings.MaxBounces = 2;
-                bWaitingForPointLightBake = false;
+                bWaitingForSpotLightBake = false;
                 bWaitingForDirectionalOcclusion = true;
                 FlushRenderingCommands();
                 if (!Baker->RequestPreview(BakeRegion))
@@ -401,16 +705,60 @@ namespace
                 }
                 if (Status.State == ECausticsBakeJobState::Complete && BakeRegion->OutputTexture)
                 {
-                    BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::LDR8;
-                    BakeRegion->Settings.LDRWhiteLevel = 2.0f;
+                    AStaticMeshActor* Caster = CasterActor.Get();
+                    AStaticMeshActor* Receiver = ReceiverActor.Get();
+                    UStaticMesh* SlabMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+                    if (!Caster || !Receiver || !SlabMesh)
+                    {
+                        Test->AddError(TEXT("Could not prepare the inclined-glass dispersion regression."));
+                        Cleanup();
+                        return true;
+                    }
+
+                    const FString AchromaticSignature = BakeRegion->BuildBakeSignature();
+                    BakeRegion->Casters[0].bEnableDispersion = true;
+                    BakeRegion->Casters[0].AbbeNumber = 5.0f;
+                    Test->TestNotEqual(TEXT("Dispersion settings participate in the bake signature"),
+                        BakeRegion->BuildBakeSignature(), AchromaticSignature);
+                    BakeRegion->MarkResultsOutOfDate();
+                    Test->TestTrue(TEXT("Changing dispersion marks the baked output out of date"),
+                        BakeRegion->bOutputOutOfDate);
+                    Test->TestTrue(TEXT("Changing dispersion marks the preview out of date"),
+                        BakeRegion->bPreviewOutOfDate);
+
+                    const FTransform RegionTransform = BakeRegion->GetActorTransform();
+                    const FQuat SlabRotation = RegionTransform.GetRotation() *
+                        FQuat(FVector::UpVector, FMath::DegreesToRadians(35.0));
+                    Caster->GetStaticMeshComponent()->SetStaticMesh(SlabMesh);
+                    Caster->SetActorTransform(FTransform(SlabRotation,
+                        RegionTransform.TransformPosition(FVector(150.0, 0.0, 0.0)), FVector(1.0, 3.0, 3.0)));
+                    Receiver->SetActorTransform(FTransform(RegionTransform.GetRotation(),
+                        RegionTransform.TransformPosition(FVector(350.0, 0.0, 0.0)), FVector(0.1, 5.0, 5.0)));
+                    BakeRegion->Casters[0].OpticalMode = ECausticsOpticalMode::DielectricOverride;
+                    BakeRegion->Casters[0].ThicknessMode = ECausticsThicknessMode::Solid;
+                    BakeRegion->Casters[0].IndexOfRefraction = 1.5f;
+                    BakeRegion->Casters[0].Roughness = 0.001f;
+                    BakeRegion->Casters[0].Tint = FLinearColor::White;
+                    BakeRegion->Settings.Denoiser = ECausticsDenoiser::Atrous;
+                    BakeRegion->Settings.AtrousIterations = 2;
+                    BakeRegion->Settings.OutputFormat = ECausticsOutputFormat::HDR16F;
+                    if (ULightComponent* LightComponent = DirectionalLight.IsValid()
+                        ? DirectionalLight->GetLightComponent() : nullptr)
+                    {
+                        LightComponent->SetLightColor(FLinearColor::White, false);
+                    }
+                    Caster->GetStaticMeshComponent()->MarkRenderStateDirty();
+                    Receiver->GetStaticMeshComponent()->MarkRenderStateDirty();
+                    FlushRenderingCommands();
+
+                    bWaitingForDispersionBake = true;
                     if (!Baker->RequestBake(BakeRegion))
                     {
-                        Test->AddError(FString::Printf(TEXT("Could not start GPU 8-bit overwrite bake: %s"),
+                        Test->AddError(FString::Printf(TEXT("Could not start inclined-glass dispersion bake: %s"),
                             *Baker->GetStatus().Message.ToString()));
                         Cleanup();
                         return true;
                     }
-                    bWaitingForLDRBake = true;
                     return false;
                 }
                 Cleanup();
@@ -464,12 +812,19 @@ namespace
         TWeakObjectPtr<UCausticsBakerEditorSubsystem> Subsystem;
         TWeakObjectPtr<ACausticsBakeRegion> Region;
         TWeakObjectPtr<APointLight> PointLight;
+        TWeakObjectPtr<ASpotLight> SpotLight;
         TWeakObjectPtr<ADirectionalLight> DirectionalLight;
+        TWeakObjectPtr<AStaticMeshActor> CasterActor;
+        TWeakObjectPtr<AStaticMeshActor> ReceiverActor;
+        TWeakObjectPtr<AStaticMeshActor> OverlappingCasterActor;
         TArray<TWeakObjectPtr<AActor>> Actors;
         double Deadline = 0.0;
         bool bWaitingForPreview = true;
         bool bWaitingForLDRBake = false;
+        bool bWaitingForDispersionBake = false;
+        bool bWaitingForOverlappingCasterBake = false;
         bool bWaitingForPointLightBake = false;
+        bool bWaitingForSpotLightBake = false;
         bool bWaitingForDirectionalOcclusion = false;
         int32 PreviewHoldFrames = 0;
     };
@@ -503,6 +858,25 @@ bool FCausticsOpticsTest::RunTest(const FString&)
     TestFalse(TEXT("Glass to air above critical angle totally internally reflects"),
         CausticsBaker::Math::Refract(FVector3f(FMath::Sin(TIRAngle), 0, -FMath::Cos(TIRAngle)),
             FVector3f(0, 0, 1), 1.5f, 1.0f, Refracted));
+
+    constexpr float ReferenceIOR = 1.5168f;
+    constexpr float AbbeNumber = 64.17f;
+    const float RedIOR = CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, AbbeNumber, 656.27f);
+    const float GreenIOR = CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, AbbeNumber, 587.56f);
+    const float BlueIOR = CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, AbbeNumber, 486.13f);
+    TestTrue(TEXT("Fraunhofer d line retains the reference IOR"),
+        FMath::IsNearlyEqual(GreenIOR, ReferenceIOR, 1.0e-6f));
+    TestTrue(TEXT("Normal dispersion orders blue above green above red"),
+        BlueIOR > GreenIOR && GreenIOR > RedIOR);
+    TestTrue(TEXT("C/F principal dispersion matches the Abbe definition"),
+        FMath::IsNearlyEqual(BlueIOR - RedIOR, (ReferenceIOR - 1.0f) / AbbeNumber, 1.0e-6f));
+    const float StrongSpread =
+        CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, 20.0f, 486.13f) -
+        CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, 20.0f, 656.27f);
+    const float WeakSpread =
+        CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, 100.0f, 486.13f) -
+        CausticsBaker::Math::RefractiveIndexAtWavelength(ReferenceIOR, 100.0f, 656.27f);
+    TestTrue(TEXT("A larger Abbe number produces weaker dispersion"), StrongSpread > WeakSpread);
     return true;
 }
 
@@ -538,6 +912,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsSettingsAndStateTest,
 bool FCausticsSettingsAndStateTest::RunTest(const FString&)
 {
     FCausticsBakeSettings Settings;
+    FCausticsCasterEntry DefaultCaster;
+    TestFalse(TEXT("Dispersion is opt-in for existing caster data"), DefaultCaster.bEnableDispersion);
+    TestEqual(TEXT("Generic-glass Abbe default"), DefaultCaster.AbbeNumber, 58.0f);
+    TestEqual(TEXT("Achromatic photon count is unchanged"),
+        CausticsBaker::Math::PhotonRecordCountPerBatch(4096u, false), 4096u);
+    TestEqual(TEXT("RGB dispersion traces one record per wavelength"),
+        CausticsBaker::Math::PhotonRecordCountPerBatch(4096u, true), 12288u);
+    TestEqual(TEXT("RGB photon power remains normalized by the per-wavelength count"),
+        CausticsBaker::Math::PhotonNormalizationCountPerBatch(4096u), 4096u);
     TestEqual(TEXT("Viewport projection defaults to surface-aware decal display"),
         Settings.ProjectionMode, ECausticsProjectionMode::DecalLike);
     int32 Resolution, Batches, Photons, Bounces, Atrous;
@@ -665,15 +1048,18 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     APointLight* PointLightActor = World->SpawnActor<APointLight>(
         RegionTransform.TransformPosition(FVector(-200.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
+    ASpotLight* SpotLightActor = World->SpawnActor<ASpotLight>(
+        RegionTransform.TransformPosition(FVector(80.0, 0.0, 0.0)), RegionTransform.Rotator(), SpawnParameters);
     ACausticsBakeRegion* Region = World->SpawnActor<ACausticsBakeRegion>(
         RegionTransform.GetLocation(), RegionTransform.Rotator(), SpawnParameters);
-    if (!CasterActor || !ReceiverActor || !LightActor || !PointLightActor || !Region)
+    if (!CasterActor || !ReceiverActor || !LightActor || !PointLightActor || !SpotLightActor || !Region)
     {
         AddError(TEXT("Could not spawn the GPU smoke-test actors."));
         if (CasterActor) World->DestroyActor(CasterActor, true);
         if (ReceiverActor) World->DestroyActor(ReceiverActor, true);
         if (LightActor) World->DestroyActor(LightActor, true);
         if (PointLightActor) World->DestroyActor(PointLightActor, true);
+        if (SpotLightActor) World->DestroyActor(SpotLightActor, true);
         if (Region) World->DestroyActor(Region, true);
         return false;
     }
@@ -717,6 +1103,14 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     PointLightComponent->SetIntensity(5000.0f);
     PointLightComponent->SetAttenuationRadius(1000.0f);
     PointLightComponent->SetSourceRadius(0.0f);
+    USpotLightComponent* SpotLightComponent = CastChecked<USpotLightComponent>(SpotLightActor->GetLightComponent());
+    SpotLightComponent->SetMobility(EComponentMobility::Movable);
+    SpotLightComponent->SetIntensityUnits(ELightUnits::Lumens);
+    SpotLightComponent->SetIntensity(5000.0f);
+    SpotLightComponent->SetAttenuationRadius(1000.0f);
+    SpotLightComponent->SetSourceRadius(0.0f);
+    SpotLightComponent->SetInnerConeAngle(20.0f);
+    SpotLightComponent->SetOuterConeAngle(45.0f);
     TestTrue(TEXT("Point Light photometric units change effective renderer brightness"),
         PointLightComponent->ComputeLightBrightness() > PointLightComponent->Intensity * 100.0f);
 
@@ -768,6 +1162,20 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     Region->Receivers.Add(ReceiverReference);
 
     UCausticsBakerEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UCausticsBakerEditorSubsystem>();
+    if (Subsystem)
+    {
+        Region->Casters[0].bEnableDispersion = true;
+        Region->Casters[0].AbbeNumber = 4.0f;
+        const TArray<FText> InvalidAbbeErrors = Subsystem->ValidateRegion(Region);
+        TestTrue(TEXT("Abbe values below five fail validation"), InvalidAbbeErrors.ContainsByPredicate(
+            [](const FText& Error) { return Error.ToString().Contains(TEXT("Abbe Number")); }));
+        Region->Casters[0].AbbeNumber = 201.0f;
+        const TArray<FText> HighAbbeErrors = Subsystem->ValidateRegion(Region);
+        TestTrue(TEXT("Abbe values above two hundred fail validation"), HighAbbeErrors.ContainsByPredicate(
+            [](const FText& Error) { return Error.ToString().Contains(TEXT("Abbe Number")); }));
+        Region->Casters[0].bEnableDispersion = false;
+        Region->Casters[0].AbbeNumber = 58.0f;
+    }
     if (!Subsystem || !Subsystem->RequestPreview(Region))
     {
         const FString Reason = Subsystem ? Subsystem->GetStatus().Message.ToString() : TEXT("Subsystem unavailable");
@@ -777,6 +1185,7 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
         World->DestroyActor(ReceiverActor, true);
         World->DestroyActor(LightActor, true);
         World->DestroyActor(PointLightActor, true);
+        World->DestroyActor(SpotLightActor, true);
         return false;
     }
     TestTrue(TEXT("Filtered receiver beyond Depth is auto-fitted before rendering"), Region->Depth > 230.0f);
@@ -787,9 +1196,11 @@ bool FCausticsGpuBakeSmokeTest::RunTest(const FString&)
     Actors.Add(ReceiverActor);
     Actors.Add(LightActor);
     Actors.Add(PointLightActor);
+    Actors.Add(SpotLightActor);
     ADD_LATENT_AUTOMATION_COMMAND(FCausticsGpuBakeWaitCommand(
-        this, Subsystem, Region, PointLightActor, LightActor, MoveTemp(Actors),
-        FPlatformTime::Seconds() + 180.0));
+        this, Subsystem, Region, PointLightActor, SpotLightActor, LightActor,
+        CasterActor, ReceiverActor, MoveTemp(Actors),
+        FPlatformTime::Seconds() + 240.0));
     return true;
 }
 

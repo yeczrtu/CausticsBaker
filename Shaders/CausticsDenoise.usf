@@ -8,6 +8,7 @@ Texture2D<float4> SPPMStats;
 RWTexture2D<float4> OutputTexture;
 uint OutputResolution;
 uint StepWidth;
+uint BatchCount;
 float FilterStrength;
 
 static const float Kernel[5] = { 1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0 };
@@ -28,7 +29,13 @@ void AtrousCS(uint3 DispatchId : SV_DispatchThreadID)
     const float4 CenterGuide = Guide.Load(int3(Pixel, 0));
     const float3 CenterNormal = normalize(CenterGuide.yzw);
     const float CenterDepth = CenterGuide.x;
-    const float Variance = SPPMStats.Load(int3(Pixel, 0)).w / max(1.0, SPPMStats.Load(int3(Pixel, 0)).x - 1.0);
+    const float4 CenterStats = SPPMStats.Load(int3(Pixel, 0));
+    // Mean/M2 are updated once per photon batch. Stats.x is the progressive
+    // SPPM hit count and is not a valid sample count for this variance.
+    const float CenterVariance = CenterStats.w / max(1.0, BatchCount - 1.0);
+    const float CenterLuminance = dot(CenterColor.rgb, float3(0.2126, 0.7152, 0.0722));
+    const float CenterSum = max(1.0e-4, CenterColor.r + CenterColor.g + CenterColor.b);
+    const float3 CenterChromaticity = CenterColor.rgb / CenterSum;
 
     float3 Sum = 0.0;
     float WeightSum = 0.0;
@@ -51,8 +58,20 @@ void AtrousCS(uint3 DispatchId : SV_DispatchThreadID)
             const float DepthSigma = max(0.01, LocalDepthRange + 0.1 * StepWidth);
             const float DepthWeight = exp(-abs(QGuide.x - CenterDepth) / (DepthSigma * max(0.25, FilterStrength)));
             const float3 QColor = InputTexture.Load(int3(Q, 0)).rgb;
-            const float ColorDelta = abs(dot(QColor - CenterColor.rgb, float3(0.2126, 0.7152, 0.0722)));
-            const float ColorWeight = exp(-ColorDelta / max(1.0e-4, sqrt(max(0.0, Variance)) * FilterStrength + 0.01));
+            const float QLuminance = dot(QColor, float3(0.2126, 0.7152, 0.0722));
+            const float QVariance = SPPMStats.Load(int3(Q, 0)).w / max(1.0, BatchCount - 1.0);
+            const float NoiseSigma = sqrt(max(0.0, CenterVariance + QVariance));
+            const float LuminanceDelta = abs(QLuminance - CenterLuminance);
+            const float LuminanceWeight = exp(-LuminanceDelta /
+                max(1.0e-4, NoiseSigma * max(0.25, FilterStrength) + 0.01));
+            const float QSum = max(1.0e-4, QColor.r + QColor.g + QColor.b);
+            const float3 QChromaticity = QColor / QSum;
+            const float ChromaticityDelta = length(QChromaticity - CenterChromaticity);
+            const float RelativeNoise = NoiseSigma /
+                max(0.01, 0.5 * (abs(CenterLuminance) + abs(QLuminance)) + 0.01);
+            const float ChromaSigma = 0.04 * max(0.25, FilterStrength) + 0.5 * RelativeNoise;
+            const float ChromaWeight = exp(-ChromaticityDelta / max(0.01, ChromaSigma));
+            const float ColorWeight = LuminanceWeight * ChromaWeight;
             const float W = Kernel[X + 2] * Kernel[Y + 2] * NormalWeight * DepthWeight * ColorWeight;
             Sum += QColor * W;
             WeightSum += W;

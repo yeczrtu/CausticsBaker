@@ -229,6 +229,14 @@ FString ACausticsBakeRegion::GetEffectiveOutputPackageName() const
     return Directory / AssetName;
 }
 
+bool ACausticsBakeRegion::HasEnabledDispersion() const
+{
+    return Casters.ContainsByPredicate([](const FCausticsCasterEntry& Caster)
+    {
+        return Caster.bEnableDispersion && Caster.OpticalMode != ECausticsOpticalMode::ConductorOverride;
+    });
+}
+
 FString ACausticsBakeRegion::BuildBakeSignature() const
 {
     FString Source;
@@ -306,8 +314,9 @@ FString ACausticsBakeRegion::BuildBakeSignature() const
     for (const FCausticsCasterEntry& Caster : Casters)
     {
         AppendComponent(Caster.Component.GetComponent(const_cast<ACausticsBakeRegion*>(this)));
-        Source += FString::Printf(TEXT("|%d|%d|%.9g|%.9g|%s|%s|%.9g"), static_cast<int32>(Caster.OpticalMode),
-            static_cast<int32>(Caster.ThicknessMode), Caster.IndexOfRefraction, Caster.Roughness,
+        Source += FString::Printf(TEXT("|%d|%d|%.9g|Dispersion%d|%.9g|%.9g|%s|%s|%.9g"),
+            static_cast<int32>(Caster.OpticalMode), static_cast<int32>(Caster.ThicknessMode),
+            Caster.IndexOfRefraction, Caster.bEnableDispersion ? 1 : 0, Caster.AbbeNumber, Caster.Roughness,
             *Caster.Tint.ToString(), *Caster.Absorption.ToString(), Caster.ThinThicknessCm);
     }
     Source += Receivers.IsEmpty() ? TEXT("|AutoReceivers") : TEXT("|FilteredReceivers");

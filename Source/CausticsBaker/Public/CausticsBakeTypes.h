@@ -94,8 +94,14 @@ struct CAUSTICSBAKER_API FCausticsCasterEntry
     UPROPERTY(EditAnywhere, Category = "Optics", meta = (ToolTip = "Solid traces a closed volume through entry and exit surfaces. Thin is for an open or single-surface sheet."))
     ECausticsThicknessMode ThicknessMode = ECausticsThicknessMode::Solid;
 
-    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "1.0", ClampMax = "4.0", UIMin = "1.0", UIMax = "2.5", EditCondition = "OpticalMode == ECausticsOpticalMode::DielectricOverride", EditConditionHides, ToolTip = "Index of refraction used by Dielectric Override. Typical glass is approximately 1.5."))
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "1.0", ClampMax = "4.0", UIMin = "1.0", UIMax = "2.5", EditCondition = "OpticalMode == ECausticsOpticalMode::DielectricOverride", EditConditionHides, ToolTip = "Reference index of refraction n_d at 587.56 nm used by Dielectric Override. Typical glass is approximately 1.5."))
     float IndexOfRefraction = 1.5f;
+
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (DisplayName = "Enable Dispersion", EditCondition = "OpticalMode != ECausticsOpticalMode::ConductorOverride", EditConditionHides, ToolTip = "Trace correlated red, green, and blue photon paths with wavelength-dependent dielectric IOR. Existing casters remain achromatic by default."))
+    bool bEnableDispersion = false;
+
+    UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "5.0", ClampMax = "200.0", UIMin = "20.0", UIMax = "100.0", EditCondition = "bEnableDispersion && OpticalMode != ECausticsOpticalMode::ConductorOverride", EditConditionHides, ToolTip = "Abbe number Vd used with the reference IOR at 587.56 nm. Lower values produce stronger visible dispersion."))
+    float AbbeNumber = 58.0f;
 
     UPROPERTY(EditAnywhere, Category = "Optics", meta = (ClampMin = "0.001", ClampMax = "1.0", EditCondition = "OpticalMode != ECausticsOpticalMode::AutoFromMaterial", EditConditionHides, ToolTip = "Microfacet roughness used by explicit Glass/Metal modes. Use 0.001 for a sharp polished caustic."))
     float Roughness = 0.02f;

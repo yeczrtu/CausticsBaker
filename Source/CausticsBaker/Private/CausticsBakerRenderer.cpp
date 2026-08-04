@@ -1,5 +1,7 @@
 #include "CausticsBakerRenderer.h"
 
+#include "CausticsBakerMath.h"
+
 #include "DeferredShadingRenderer.h"
 #include "GlobalShader.h"
 #include "Math/Float16Color.h"
@@ -82,6 +84,8 @@ public:
         SHADER_PARAMETER(FVector3f, PreViewTranslation)
         SHADER_PARAMETER(uint32, OutputResolution)
         SHADER_PARAMETER(uint32, PhotonCount)
+        SHADER_PARAMETER(uint32, PhotonNormalizationCount)
+        SHADER_PARAMETER(uint32, bUseDispersion)
         SHADER_PARAMETER(uint32, BatchIndex)
         SHADER_PARAMETER(uint32, RandomSeed)
         SHADER_PARAMETER(uint32, MaxBounces)
@@ -234,6 +238,7 @@ public:
         SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
         SHADER_PARAMETER(uint32, OutputResolution)
         SHADER_PARAMETER(uint32, StepWidth)
+        SHADER_PARAMETER(uint32, BatchCount)
         SHADER_PARAMETER(float, FilterStrength)
     END_SHADER_PARAMETER_STRUCT()
 };
@@ -272,7 +277,11 @@ namespace
         uint32 ReceiverId;
         FVector3f Power;
         uint32 BinIndex;
+        uint32 PackedNormal;
     };
+
+    static_assert(sizeof(FPhotonRecordStride) == 36, "FPhotonRecord must match the HLSL structured-buffer stride.");
+    static_assert(sizeof(FCausticsGpuCaster) == 64, "FCausticsGpuCaster must match the HLSL structured-buffer stride.");
 
     TAtomic<uint32> GActiveCaptureOwnerUniqueId { 0 };
 
@@ -333,6 +342,8 @@ namespace
             Dest.IOR = Source.IOR;
             Dest.TintRoughness = FVector4f(Source.Tint.X, Source.Tint.Y, Source.Tint.Z, Source.Roughness);
             Dest.AbsorptionThickness = FVector4f(Source.Absorption.X, Source.Absorption.Y, Source.Absorption.Z, Source.ThinThicknessCm);
+            Dest.Dispersion = FVector4f(Source.bEnableDispersion ? 1.0f / FMath::Clamp(Source.AbbeNumber, 5.0f, 200.0f) : 0.0f,
+                0.0f, 0.0f, 0.0f);
             Job.GpuCasters.Add(Dest);
         }
         for (const FPrimitiveComponentId ComponentId : Job.Request.Receivers)
@@ -450,7 +461,10 @@ namespace
 #if RHI_RAYTRACING
         const uint32 BatchIndex = Job.CompletedBatches.Load();
         const uint32 Resolution = Job.Request.Resolution;
-        const uint32 PhotonCount = Job.Request.PhotonsPerBatch;
+        const uint32 PhotonNormalizationCount = CausticsBaker::Math::PhotonNormalizationCountPerBatch(
+            Job.Request.PhotonsPerBatch);
+        const uint32 PhotonCount = CausticsBaker::Math::PhotonRecordCountPerBatch(
+            PhotonNormalizationCount, Job.Request.bUseDispersion);
         const uint32 BinGridWidth = FMath::DivideAndRoundUp(Resolution, 8u);
         const uint32 BinGridHeight = FMath::DivideAndRoundUp(Resolution, 8u);
         const uint32 BinCount = BinGridWidth * BinGridHeight;
@@ -481,6 +495,8 @@ namespace
         RayParameters->PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
         RayParameters->OutputResolution = Resolution;
         RayParameters->PhotonCount = PhotonCount;
+        RayParameters->PhotonNormalizationCount = PhotonNormalizationCount;
+        RayParameters->bUseDispersion = Job.Request.bUseDispersion ? 1u : 0u;
         RayParameters->BatchIndex = BatchIndex;
         RayParameters->RandomSeed = Job.Request.RandomSeed;
         RayParameters->MaxBounces = Job.Request.MaxBounces;
@@ -624,6 +640,7 @@ namespace
                 Atrous->OutputTexture = GraphBuilder.CreateUAV(Output);
                 Atrous->OutputResolution = Resolution;
                 Atrous->StepWidth = 1u << Iteration;
+                Atrous->BatchCount = Job.Request.BatchCount;
                 Atrous->FilterStrength = Job.Request.FilterStrength;
                 FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Caustics a-trous %d", Iteration), AtrousShader, Atrous,
                     FComputeShaderUtils::GetGroupCount(Extent, FIntPoint(8)));

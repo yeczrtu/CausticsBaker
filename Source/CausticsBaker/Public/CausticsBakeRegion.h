@@ -107,6 +107,7 @@ public:
 
     FString GetEffectiveOutputPackageName() const;
     FString BuildBakeSignature() const;
+    bool HasEnabledDispersion() const;
     void ResolveReceiverComponents(TArray<UPrimitiveComponent*>& OutReceivers) const;
     FVector GetLocalProjectionOrigin() const { return FVector::ZeroVector; }
     FVector GetLocalProjectionExtent() const { return FVector(Depth, Width * 0.5f, Height * 0.5f); }

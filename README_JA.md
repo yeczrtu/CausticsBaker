@@ -5,7 +5,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.9-orange)
+![Version](https://img.shields.io/badge/version-1.3.0-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -36,9 +36,10 @@ Regionの配置、ライトとCasterの設定、Preview、Bakeまでの一通り
 - 投影ボックス内のReceiver自動検出と、任意のReceiver Filter
 - Directional／Point／Spot Lightからのフォトン放出
 - Static Mesh／Instanced Static Mesh／Hierarchical Instanced Static MeshのCasterとReceiver
-- GGX、Fresnel、Snell屈折、全反射、Beer–Lambert吸収、Russian Roulette
+- C／d／F線をRGBへ対応させた、Abbe数ベースの誘電体分散（CasterごとのOpt-in）
+- Owen-scrambled Sobolサンプリング、GGX VNDF、Fresnel、Snell屈折、全反射、Beer–Lambert吸収、Russian Roulette
 - 最大4段の媒質スタックによる、複数の閉じた誘電体の追跡
-- SPPM密度推定と、Guideを利用するGPU à-trousデノイザ
+- 受光法線を考慮するSPPM密度推定と、分散境界を保護するGPU à-trousデノイザ
 - Bake時に任意で追加できるIntel Open Image Denoise
 - ビューポートへのHDR Previewと、Raw／Guideなどのデバッグ表示
 - 線形HDR `RGBA16F`と通常のsRGB `BGRA8`出力
@@ -135,6 +136,20 @@ Receiver Filterは、投影先を特定のメッシュだけへ制限したい�
 
 SubstrateのAutoモードは、Ray Tracing用に簡略化された最上位のSlabまたはSingle Layer Waterを使用します。任意のSubstrate積層をそのまま再現するものではありません。UE 5.8が透過色や有効な最上位ClosureをRT payloadへ渡さないマテリアルもあるため、色付きガラスを確実に再現する場合は`Dielectric Override (Glass)`を選び、`Optical Tint / F0`を設定してください。
 
+### RGB分散
+
+`Enable Dispersion`はCasterごとのOpt-inで、既定は無効です。`Auto`ではRT payloadから得たIORを基準IOR `n_d`として使用し、実際に誘電体と判定されたときだけ分散します。`Conductor Override`では無視されます。
+
+`Abbe Number`は5～200で、値が小さいほど分散が強くなります。C／d／F線（赤656.27 nm／緑587.56 nm／青486.13 nm）と2項Cauchy近似を使用し、緑のIORが設定された`n_d`に一致するよう計算します。定義は[SCHOTTのAbbe数](https://media.schott.com/api/public/content/8afd09ccdf4243e890df9f875b1b5579?v=ce5367ec)に準拠します。
+
+| 材料例 | `n_d` | Abbe Number `V_d` |
+| --- | ---: | ---: |
+| 溶融石英 | 約1.4585 | 約67.8 |
+| SCHOTT N-BK7 | 1.5168 | 64.17 |
+| SCHOTT N-SF11 | 1.7847 | 25.68 |
+
+値は開始点の例です。製品、組成、温度に応じて使用する材料データシートを優先してください。Light Color、Optical Tint、AbsorptionのR／G／Bは、それぞれ対応する3波長の値として評価されます。
+
 ### シャープなガラスコースティクスの開始値
 
 閉じたガラス球などでは、まず次の設定から調整することを推奨します。
@@ -173,15 +188,17 @@ Receiverが光学的な焦点位置から外れている場合、フォトン数
 - Initial Radius
 - Filter Strength
 
-総フォトン数は`Photon Batches × Photons Per Batch`です。値を増やすとノイズは減りますが、処理時間とGPU負荷も増えます。Initial Radiusを小さくすると細部を残しやすくなりますが、フォトン密度が不足するとノイズが増えます。
+通常の総フォトン数は`Photon Batches × Photons Per Batch`です。分散が有効なCasterが1つでもある場合、`Photons Per Batch`は「1波長当たり」となり、同じ放出・GGX・Fresnel／RRサンプルを共有するRGB相関トリプレットを追跡するため、実総数はその3倍です。各色の電力は1波長当たりのフォトン数で正規化されるため、分散を有効にしただけでエネルギーが1/3にはなりません。
 
-`Effective Preview / Effective Bake`には、現在の設定から実際に使用される解像度、総フォトン数、バウンス数、フィルタ反復数が表示されます。
+値を増やすとノイズは減りますが、処理時間とGPU負荷も増えます。Initial Radiusを小さくすると細部を残しやすくなりますが、フォトン密度が不足するとノイズが増えます。分散時はPreview／Bakeともフォトン追跡時間と一時Photon bufferが概ね3倍になりますが、出力Textureのサイズは変わりません。
+
+`Effective Preview / Effective Bake`には、現在の設定から実際に使用される解像度、波長数、1波長当たりと実際の総フォトン数、バウンス数、フィルタ反復数が表示されます。
 
 `Preview`を押すと、以前のPreviewは計算開始前に自動で解除されます。新しい計算や事前検証が失敗した場合も古い結果を残さないため、影や旧配置に由来する結果を新しいPreviewと誤認しません。
 
 ## デノイズとデバッグ表示
 
-- `GPU a-trous`: variance、normal、receiver depth、coverageを利用するedge-awareフィルタです。
+- `GPU a-trous`: バッチ間の不偏分散、normal、receiver depth、coverage、輝度差、色度差を利用するedge-awareフィルタです。中心と近傍の双方の分散を参照し、虹色の境界を跨ぐ混色を抑えます。
 - `GPU a-trous + Intel OIDN`: Bake時のみ、a-trous後にUE同梱Intel OIDNを追加します。
 - `None`: 密度推定結果をそのまま確認します。細い集光線の評価に適しています。
 
@@ -215,12 +232,12 @@ Receiverが光学的な焦点位置から外れている場合、フォトン数
 
 1. 同じEditor Worldを参照する64×64の一時SceneCaptureを作成します。
 2. Capture専用ViewだけGIをPlugin、TranslucencyをRay Tracedへ設定します。
-3. 投影レイからReceiver Guideを作成し、depth、shading normal、Persistent Primitive ID、coverageを保存します。
+3. 投影レイからReceiver Guideを作成し、depth、shading normal、Persistent Primitive ID、coverageを保存します。GuideはPreviewで2×2、Bakeで4×4 supersamplingします。
 4. 1回のCaptureで1 photon batchを処理します。
 5. Directional LightはCaster境界のライト空間矩形、Point／Spot LightはCaster群を囲む立体角からサンプリングします。
-6. Photon RayGenでGGX、Fresnel、Snell屈折、全反射、吸収、媒質スタックを評価します。
+6. Photon RayGenでフォトンごとの多次元Owen-scrambled Sobol列を使い、入射方向を考慮する[GGX VNDF](https://jcgt.org/published/0007/04/01/)、Fresnel、Snell屈折、全反射、吸収、波長別媒質スタックを評価します。
 7. photon recordsをinteger atomic count、prefix scan、8×8 tile bin、scatterで整理します。
-8. World距離、normal、receiver IDを使うcone kernelでSPPM密度推定を更新します。
+8. World距離、圧縮受光法線との互換性、receiver IDを使うcone kernelでSPPM密度推定を更新します。
 9. 必要に応じてGPU à-trousとIntel OIDNを適用します。
 10. `FRHIGPUTextureReadback`完了後、Game ThreadでTexture2Dを更新します。
 
@@ -253,7 +270,8 @@ PreviewはScene DepthからWorld Positionと幾何法線を再構築し、既定
 - 1 RegionにつきDirectional／Point／Spot Lightを1灯
 - Static Mesh、ISM、HISMのみ
 - Skeletal Mesh、Landscape、Geometry Collectionは対象外
-- Volumetric caustics、色分散は対象外
+- Volumetric causticsは対象外
+- 分散は現行RGB出力向けの3波長近似です。連続スペクトル、XYZ再構成、波長別光源SPD、金属の複素IORは対象外です
 - 物理計算用Guideと既定の`Surface-aware Decal`は、投影方向に重なる複数Receiver層の最前面1層のみ。奥行きの異なる各層にはRegionの分割が必要です
 - Receiver UVへの直接ベイクは対象外
 - Runtime Decal／Materialの自動生成は対象外
@@ -281,7 +299,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.2.9では、Win64 BuildPlugin、PCD3D_SM6 Global Shader Compile、HDR／8bit出力、UEの測光単位を反映したPoint Light、Directional Lightの上流遮蔽物、2バウンスSolid Glass、失敗した再Previewの自動クリア、色付き半透明Caster、Surface-aware Decalの大規模Region補正を含む自動テストを確認しています。
+v1.3.0では、Win64 Editorビルド、PCD3D_SM6 Global Shader Compile、RGB分散スラブ、Cauchy／Abbe光学式、フォトン計数、HDR／8bit出力、Point／Spot／Directional Light、遮蔽、Solid Glass、SPPM、Receiver coverageを含む自動テストを確認しています。
 
 ## Issueを報告する場合
 

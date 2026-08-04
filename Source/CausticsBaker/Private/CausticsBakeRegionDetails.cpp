@@ -197,7 +197,15 @@ private:
         int32 Bounces = 0;
         int32 AtrousIterations = 0;
         Region->Settings.Resolve(bPreview, Resolution, Batches, PhotonsPerBatch, Bounces, AtrousIterations);
-        const int64 TotalPhotons = static_cast<int64>(Batches) * static_cast<int64>(PhotonsPerBatch);
+        const bool bDispersion = Region->HasEnabledDispersion();
+        const int64 WavelengthCount = bDispersion ? 3 : 1;
+        const int64 TotalPhotons = WavelengthCount * static_cast<int64>(Batches) * static_cast<int64>(PhotonsPerBatch);
+        if (bDispersion)
+        {
+            return FText::Format(LOCTEXT("EffectiveSpectralQualityFormat", "3 wavelengths x {0} batches x {1} photons/wavelength/batch = {2} traced photons | {3} x {3} px | {4} bounces | {5} a-trous"),
+                FText::AsNumber(Batches), FText::AsNumber(PhotonsPerBatch), FText::AsNumber(TotalPhotons),
+                FText::AsNumber(Resolution), FText::AsNumber(Bounces), FText::AsNumber(AtrousIterations));
+        }
         return FText::Format(LOCTEXT("EffectiveQualityFormat", "{0} x {1} = {2} photons | {3} x {3} px | {4} bounces | {5} a-trous"),
             FText::AsNumber(Batches), FText::AsNumber(PhotonsPerBatch), FText::AsNumber(TotalPhotons),
             FText::AsNumber(Resolution), FText::AsNumber(Bounces), FText::AsNumber(AtrousIterations));

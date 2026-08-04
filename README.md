@@ -5,7 +5,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.2.9-orange)
+![Version](https://img.shields.io/badge/version-1.3.0-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -36,9 +36,10 @@ This video covers the complete workflow: placing a Region, assigning the light a
 - Automatic Receiver detection inside the projection box, with an optional Receiver Filter
 - Photon emission from Directional, Point, and Spot Lights
 - Static Mesh, Instanced Static Mesh, and Hierarchical Instanced Static Mesh Casters and Receivers
-- GGX, Fresnel, Snell refraction, total internal reflection, Beer–Lambert absorption, and Russian roulette
+- Per-Caster, opt-in Abbe-number dielectric dispersion mapping the C/d/F spectral lines to RGB
+- Owen-scrambled Sobol sampling, GGX VNDF, Fresnel, Snell refraction, total internal reflection, Beer–Lambert absorption, and Russian roulette
 - A four-level medium stack for tracing multiple closed dielectrics
-- SPPM density estimation with a Guide-driven GPU à-trous denoiser
+- Receiver-normal-aware SPPM density estimation and a GPU à-trous denoiser that protects dispersion boundaries
 - Optional Intel Open Image Denoise pass for Bake
 - HDR viewport Preview plus Raw, Guide, and other debug views
 - Linear HDR `RGBA16F` and standard sRGB `BGRA8` output
@@ -135,6 +136,20 @@ If an explicitly selected Receiver lies beyond the current Depth, `Auto Fit Dept
 
 Substrate Auto mode uses the simplified topmost Slab or Single Layer Water representation available to ray tracing. It does not reproduce an arbitrary Substrate stack. Some UE 5.8 materials do not provide transmission color or a usable top closure in the RT payload; for reliable colored glass, select `Dielectric Override (Glass)` and set `Optical Tint / F0`.
 
+### RGB dispersion
+
+`Enable Dispersion` is a per-Caster opt-in and is disabled by default. In `Auto`, the IOR recovered from the RT payload is treated as the reference IOR `n_d`, and dispersion is applied only when the material is actually classified as a dielectric. The setting is ignored for `Conductor Override`.
+
+`Abbe Number` ranges from 5 to 200; lower values produce stronger dispersion. The implementation uses the C/d/F spectral lines—red 656.27 nm, green 587.56 nm, and blue 486.13 nm—with a two-term Cauchy approximation, keeping the green IOR equal to the configured `n_d`. The definition follows [SCHOTT's Abbe number](https://media.schott.com/api/public/content/8afd09ccdf4243e890df9f875b1b5579?v=ce5367ec).
+
+| Example material | `n_d` | Abbe Number `V_d` |
+| --- | ---: | ---: |
+| Fused silica | About 1.4585 | About 67.8 |
+| SCHOTT N-BK7 | 1.5168 | 64.17 |
+| SCHOTT N-SF11 | 1.7847 | 25.68 |
+
+These values are starting points. Prefer the relevant material data sheet for the actual product, composition, and temperature. The R/G/B values of Light Color, Optical Tint, and Absorption are evaluated at the corresponding three wavelengths.
+
 ### Starting settings for sharp glass caustics
 
 For a closed glass sphere or a similar object, start with the following settings:
@@ -173,15 +188,17 @@ Set `Preset` to `Custom (Preview and Bake)` to change the following for both Pre
 - Initial Radius
 - Filter Strength
 
-The total photon count is `Photon Batches × Photons Per Batch`. Increasing these values reduces noise but also increases processing time and GPU load. A smaller Initial Radius preserves more detail but increases noise when photon density is insufficient.
+Without dispersion, the total photon count is `Photon Batches × Photons Per Batch`. If any Caster has dispersion enabled, `Photons Per Batch` is interpreted per wavelength. The baker traces correlated RGB triplets that share the same emission, GGX, Fresnel, and RR samples, so the actual count is three times higher. Power in each channel is normalized by the per-wavelength photon count, so enabling dispersion alone does not reduce energy to one third.
 
-`Effective Preview / Effective Bake` displays the effective resolution, total photon count, bounce count, and filter iteration count derived from the current settings.
+Increasing these values reduces noise but also increases processing time and GPU load. A smaller Initial Radius preserves more detail but increases noise when photon density is insufficient. With dispersion, photon-tracing time and temporary Photon buffer usage are roughly tripled for both Preview and Bake, while the output Texture size remains unchanged.
+
+`Effective Preview / Effective Bake` displays the effective resolution, wavelength count, per-wavelength and actual total photon counts, bounce count, and filter iteration count derived from the current settings.
 
 Clicking `Preview` automatically clears the previous Preview before calculation starts. If the new calculation or preflight validation fails, the old result is still removed so that a result caused by previous shadows or placement cannot be mistaken for the new Preview.
 
 ## Denoising and debug views
 
-- `GPU a-trous`: An edge-aware filter guided by variance, normal, Receiver depth, and coverage.
+- `GPU a-trous`: An edge-aware filter guided by unbiased inter-batch variance, normal, Receiver depth, coverage, luminance difference, and chromaticity difference. It considers variance on both the center and neighboring texels and reduces color bleeding across rainbow boundaries.
 - `GPU a-trous + Intel OIDN`: Adds Unreal Engine's bundled Intel OIDN after à-trous for Bake only.
 - `None`: Displays the density-estimation result directly and is useful for evaluating fine concentration lines.
 
@@ -215,12 +232,12 @@ The generated package is marked Dirty but is not saved automatically. The plugin
 
 1. Create a temporary 64×64 SceneCapture that references the same Editor World.
 2. Set only the capture View to Plugin GI and Ray Traced Translucency.
-3. Build the Receiver Guide from projection rays and store depth, shading normal, Persistent Primitive ID, and coverage.
+3. Build the Receiver Guide from projection rays and store depth, shading normal, Persistent Primitive ID, and coverage. The Guide uses 2×2 supersampling for Preview and 4×4 for Bake.
 4. Process one photon batch per capture.
 5. Sample a Directional Light from the Caster bounds projected into a light-space rectangle, or a Point/Spot Light from the solid angle enclosing the Caster group.
-6. Evaluate GGX, Fresnel, Snell refraction, total internal reflection, absorption, and the medium stack in Photon RayGen.
+6. In Photon RayGen, use a per-photon multidimensional Owen-scrambled Sobol sequence to evaluate incident-direction-aware [GGX VNDF](https://jcgt.org/published/0007/04/01/), Fresnel, Snell refraction, total internal reflection, absorption, and a wavelength-specific medium stack.
 7. Organize photon records with an integer atomic count, prefix scan, 8×8 tile binning, and scatter.
-8. Update SPPM density estimation with a cone kernel using world distance, normal, and Receiver ID.
+8. Update SPPM density estimation with a cone kernel using world distance, compatibility with the compressed Receiver normal, and Receiver ID.
 9. Apply GPU à-trous and Intel OIDN when requested.
 10. After `FRHIGPUTextureReadback` completes, update the Texture2D on the Game Thread.
 
@@ -253,7 +270,8 @@ Preview reconstructs World Position and geometric normal from Scene Depth. By de
 - One Directional, Point, or Spot Light per Region
 - Static Mesh, ISM, and HISM only
 - No Skeletal Mesh, Landscape, or Geometry Collection support
-- No volumetric caustics or color dispersion
+- No volumetric caustics
+- Dispersion is a three-wavelength approximation for the current RGB output; continuous spectra, XYZ reconstruction, wavelength-dependent source SPDs, and complex IOR for metals are not supported
 - The physical Guide and the default `Surface-aware Decal` support only the frontmost Receiver layer when multiple Receivers overlap along the projection direction; use separate Regions for layers at different depths
 - No direct baking into Receiver UVs
 - No automatic runtime Decal or Material generation
@@ -281,7 +299,7 @@ Automation Tests are registered under `CausticsBaker.*`. GPU tests require an Ed
   '-TestExit=Automation Test Queue Empty'
 ```
 
-For v1.2.9, verified coverage includes Win64 BuildPlugin, PCD3D_SM6 Global Shader compilation, HDR/8-bit output, Point Lights using UE photometric units, upstream Directional Light occluders, two-bounce Solid Glass, automatic clearing after a failed re-Preview, colored translucent Casters, and large-Region compensation for Surface-aware Decal.
+For v1.3.0, the verified automated coverage includes the Win64 Editor build, PCD3D_SM6 Global Shader compilation, RGB dispersion slabs, Cauchy/Abbe optics, photon counting, HDR/8-bit output, Point/Spot/Directional Lights, occlusion, Solid Glass, SPPM, and Receiver coverage.
 
 ## Reporting an issue
 

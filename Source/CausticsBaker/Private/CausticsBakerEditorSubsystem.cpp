@@ -336,6 +336,12 @@ TArray<FText> UCausticsBakerEditorSubsystem::ValidateRegion(const ACausticsBakeR
         {
             Errors.Add(FText::Format(LOCTEXT("InvalidIOR", "Caster {0}: dielectric IOR must be greater than 1."), Index));
         }
+        if (Entry.bEnableDispersion && Entry.OpticalMode != ECausticsOpticalMode::ConductorOverride &&
+            (!FMath::IsFinite(Entry.AbbeNumber) || Entry.AbbeNumber < 5.0f || Entry.AbbeNumber > 200.0f))
+        {
+            Errors.Add(FText::Format(LOCTEXT("InvalidAbbeNumber",
+                "Caster {0}: Abbe Number must be between 5 and 200 when dispersion is enabled."), Index));
+        }
     }
     if (LocalLight && !CasterSet.IsEmpty() && !bAnyCasterWithinLocalLightRange)
     {
@@ -491,13 +497,14 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
     Request.SceneInterface = World->Scene;
     Request.bPreview = bPreview;
     Request.bUseOIDN = !bPreview && Region->Settings.Denoiser == ECausticsDenoiser::AtrousThenOIDN;
+    Request.bUseDispersion = Region->HasEnabledDispersion();
     Request.Resolution = Resolution;
     Request.BatchCount = BatchCount;
     Request.PhotonsPerBatch = PhotonsPerBatch;
     Request.MaxBounces = MaxBounces;
-    // A 2x2 guide is inexpensive compared with photon tracing and prevents
-    // thin or grazing receiver footprints from disappearing in Preview.
-    Request.GuideSamples = 4;
+    // Preview keeps the inexpensive 2x2 guide. A final Bake uses 4x4 samples
+    // to stabilize thin silhouettes, grazing footprints, and coverage edges.
+    Request.GuideSamples = bPreview ? 4 : 16;
     Request.AtrousIterations = Region->Settings.Denoiser == ECausticsDenoiser::None ? 0 : AtrousIterations;
     Request.RandomSeed = Region->Settings.RandomSeed;
     Request.SPPMAlpha = FMath::Clamp(Region->Settings.SPPMConvergence, 0.01f, 1.0f);
@@ -532,6 +539,9 @@ bool UCausticsBakerEditorSubsystem::StartJob(ACausticsBakeRegion* Region, const 
         Caster.bAutoTreatAsDielectric =
             Entry.OpticalMode == ECausticsOpticalMode::AutoFromMaterial && HasTranslucentMaterial(Primitive);
         Caster.IOR = Entry.IndexOfRefraction;
+        Caster.bEnableDispersion = Entry.bEnableDispersion &&
+            Entry.OpticalMode != ECausticsOpticalMode::ConductorOverride;
+        Caster.AbbeNumber = FMath::Clamp(Entry.AbbeNumber, 5.0f, 200.0f);
         Caster.Roughness = FMath::Clamp(Entry.Roughness, 0.001f, 1.0f);
         Caster.Tint = FVector3f(Entry.Tint.R, Entry.Tint.G, Entry.Tint.B);
         Caster.Absorption = FVector3f(Entry.Absorption.R, Entry.Absorption.G, Entry.Absorption.B);

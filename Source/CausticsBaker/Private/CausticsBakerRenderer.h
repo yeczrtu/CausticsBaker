@@ -24,6 +24,8 @@ struct FCausticsRenderCaster
     ECausticsThicknessMode ThicknessMode = ECausticsThicknessMode::Solid;
     bool bAutoTreatAsDielectric = false;
     float IOR = 1.5f;
+    bool bEnableDispersion = false;
+    float AbbeNumber = 58.0f;
     float Roughness = 0.02f;
     FVector3f Tint = FVector3f(1.0f);
     FVector3f Absorption = FVector3f::ZeroVector;
@@ -37,6 +39,7 @@ struct FCausticsRenderRequest
     FSceneInterface* SceneInterface = nullptr;
     bool bPreview = false;
     bool bUseOIDN = false;
+    bool bUseDispersion = false;
     int32 Resolution = 512;
     int32 BatchCount = 8;
     int32 PhotonsPerBatch = 131072;
@@ -89,6 +92,7 @@ struct FCausticsGpuCaster
     float IOR = 1.5f;
     FVector4f TintRoughness = FVector4f(1.0f, 1.0f, 1.0f, 0.02f);
     FVector4f AbsorptionThickness = FVector4f(0.0f, 0.0f, 0.0f, 0.5f);
+    FVector4f Dispersion = FVector4f::Zero();
 };
 
 class FCausticsRenderJob final : public TSharedFromThis<FCausticsRenderJob, ESPMode::ThreadSafe>
