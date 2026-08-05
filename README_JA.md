@@ -5,7 +5,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.3.0-orange)
+![Version](https://img.shields.io/badge/version-1.3.1-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -262,6 +262,7 @@ PreviewはScene DepthからWorld Positionと幾何法線を再構築し、既定
 | 8bit出力が白飛びする | `8-bit White Level`を大きくします。HDR値がWhite Level以上のRGBは255へクランプされます。 |
 | Preview／OutputがOut of Dateになる | Region、ライト、Caster／Receiver、マテリアル、Bake設定の変更後はPreviewまたはBakeを再実行します。 |
 | Bake後もContent Browserへ保存されない | アセットは作成・更新されますが自動保存されません。Content BrowserまたはSave Allで保存します。 |
+| Pluginを有効にするとLumen GIが無効になる | v1.3.1以降へ更新してください。旧バージョンでは専用Captureが動作していない間も、メインビューポートへPlugin GIの上書きが適用される場合がありました。 |
 | Pluginの重複エラーが出る | プロジェクトのPlugins以下にCausticsBakerが1つだけ存在する状態にします。 |
 
 ## v1の制限
@@ -299,7 +300,7 @@ Automation Testsは`CausticsBaker.*`へ登録されています。GPUテスト�
   '-TestExit=Automation Test Queue Empty'
 ```
 
-v1.3.0では、Win64 Editorビルド、PCD3D_SM6 Global Shader Compile、RGB分散スラブ、Cauchy／Abbe光学式、フォトン計数、HDR／8bit出力、Point／Spot／Directional Light、遮蔽、Solid Glass、SPPM、Receiver coverageを含む自動テストを確認しています。
+v1.3.1では、Win64 Editorビルド、PCD3D_SM6 Global Shader Compile、Capture専用のPlugin GI／Ray Traced Translucency上書き、メインビューポートのLumen維持、RGB分散スラブ、Cauchy／Abbe光学式、フォトン計数、HDR／8bit出力、Point／Spot／Directional Light、遮蔽、Solid Glass、SPPM、Receiver coverageを含む自動テストを確認しています。
 
 ## Issueを報告する場合
 

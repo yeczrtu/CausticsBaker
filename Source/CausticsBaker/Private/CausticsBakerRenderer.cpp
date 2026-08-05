@@ -724,11 +724,20 @@ FCausticsBakerViewExtension::FCausticsBakerViewExtension(const FAutoRegister& Au
 
 void FCausticsBakerViewExtension::SetupView(FSceneViewFamily&, FSceneView& InView)
 {
-    if (InView.ViewActor.ActorUniqueId == GActiveCaptureOwnerUniqueId.Load())
+    const uint32 ActiveCaptureOwnerUniqueId = GActiveCaptureOwnerUniqueId.Load();
+    ApplyCaptureOverrides(InView.FinalPostProcessSettings, ActiveCaptureOwnerUniqueId,
+        InView.bIsSceneCapture, InView.ViewActor.ActorUniqueId);
+}
+
+void FCausticsBakerViewExtension::ApplyCaptureOverrides(FPostProcessSettings& InOutSettings,
+    const uint32 ActiveCaptureOwnerUniqueId, const bool bIsSceneCapture, const uint32 ViewOwnerUniqueId)
+{
+    // Ownerless editor views also report ID 0 while SetupView runs, so the inactive sentinel must never match them.
+    if (ActiveCaptureOwnerUniqueId != 0u && bIsSceneCapture && ViewOwnerUniqueId == ActiveCaptureOwnerUniqueId)
     {
-        InView.FinalPostProcessSettings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::Plugin;
+        InOutSettings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::Plugin;
         PRAGMA_DISABLE_DEPRECATION_WARNINGS
-        InView.FinalPostProcessSettings.TranslucencyType = ETranslucencyType::RayTraced_Deprecated;
+        InOutSettings.TranslucencyType = ETranslucencyType::RayTraced_Deprecated;
         PRAGMA_ENABLE_DEPRECATION_WARNINGS
     }
 }

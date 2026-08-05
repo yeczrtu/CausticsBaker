@@ -8,6 +8,7 @@
 #include "SceneViewExtension.h"
 
 class FSceneInterface;
+struct FPostProcessSettings;
 struct IPooledRenderTarget;
 
 enum class ECausticsRenderLightType : uint32
@@ -160,6 +161,13 @@ public:
     bool HasRenderJob_RenderThread() const { return RenderJob.IsValid(); }
 
 private:
+    static void ApplyCaptureOverrides(FPostProcessSettings& InOutSettings,
+        uint32 ActiveCaptureOwnerUniqueId, bool bIsSceneCapture, uint32 ViewOwnerUniqueId);
+
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FCausticsCaptureOverrideIsolationTest;
+#endif
+
     TSharedPtr<FCausticsRenderJob, ESPMode::ThreadSafe> RenderJob;
     TSharedPtr<FCausticsRenderJob, ESPMode::ThreadSafe> PreviewJob;
 };

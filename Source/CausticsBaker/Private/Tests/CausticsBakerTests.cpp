@@ -5,6 +5,7 @@
 #include "CausticsBakeTypes.h"
 #include "CausticsBakeRegion.h"
 #include "CausticsBakerEditorSubsystem.h"
+#include "CausticsBakerRenderer.h"
 #include "CausticsTextureOutput.h"
 #include "AssetCompilingManager.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -14,6 +15,7 @@
 #include "Editor.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
+#include "Engine/Scene.h"
 #include "Engine/SpotLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
@@ -828,6 +830,52 @@ namespace
         bool bWaitingForDirectionalOcclusion = false;
         int32 PreviewHoldFrames = 0;
     };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsCaptureOverrideIsolationTest,
+    "CausticsBaker.View.CaptureOverrideIsolation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCausticsCaptureOverrideIsolationTest::RunTest(const FString&)
+{
+    const auto MakeLumenRasterSettings = []
+    {
+        FPostProcessSettings Settings;
+        Settings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::Lumen;
+        Settings.TranslucencyType = ETranslucencyType::Raster;
+        return Settings;
+    };
+    const auto TestLumenRasterUnchanged = [this](const TCHAR* Context, const FPostProcessSettings& Settings)
+    {
+        TestEqual(FString::Printf(TEXT("%s preserves Lumen"), Context),
+            Settings.DynamicGlobalIlluminationMethod.GetValue(), EDynamicGlobalIlluminationMethod::Lumen);
+        TestEqual(FString::Printf(TEXT("%s preserves raster translucency"), Context),
+            Settings.TranslucencyType, ETranslucencyType::Raster);
+    };
+
+    FPostProcessSettings InactiveMainViewSettings = MakeLumenRasterSettings();
+    FCausticsBakerViewExtension::ApplyCaptureOverrides(InactiveMainViewSettings, 0u, false, 0u);
+    TestLumenRasterUnchanged(TEXT("Inactive ownerless main view"), InactiveMainViewSettings);
+
+    FPostProcessSettings InactiveCaptureSettings = MakeLumenRasterSettings();
+    FCausticsBakerViewExtension::ApplyCaptureOverrides(InactiveCaptureSettings, 0u, true, 0u);
+    TestLumenRasterUnchanged(TEXT("Inactive ownerless capture"), InactiveCaptureSettings);
+
+    FPostProcessSettings NonCaptureSettings = MakeLumenRasterSettings();
+    FCausticsBakerViewExtension::ApplyCaptureOverrides(NonCaptureSettings, 41u, false, 41u);
+    TestLumenRasterUnchanged(TEXT("Matching non-capture view"), NonCaptureSettings);
+
+    FPostProcessSettings MismatchedCaptureSettings = MakeLumenRasterSettings();
+    FCausticsBakerViewExtension::ApplyCaptureOverrides(MismatchedCaptureSettings, 41u, true, 42u);
+    TestLumenRasterUnchanged(TEXT("Mismatched capture view"), MismatchedCaptureSettings);
+
+    FPostProcessSettings MatchingCaptureSettings = MakeLumenRasterSettings();
+    FCausticsBakerViewExtension::ApplyCaptureOverrides(MatchingCaptureSettings, 41u, true, 41u);
+    TestEqual(TEXT("Matching dedicated capture selects plugin GI"),
+        MatchingCaptureSettings.DynamicGlobalIlluminationMethod.GetValue(), EDynamicGlobalIlluminationMethod::Plugin);
+    PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    TestEqual(TEXT("Matching dedicated capture selects ray-traced translucency"),
+        MatchingCaptureSettings.TranslucencyType, ETranslucencyType::RayTraced_Deprecated);
+    PRAGMA_ENABLE_DEPRECATION_WARNINGS
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCausticsProjectionCoordinatesTest,

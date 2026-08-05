@@ -5,7 +5,7 @@
 ![Unreal Engine 5.8](https://img.shields.io/badge/Unreal%20Engine-5.8-0E1128?logo=unrealengine&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Win64-0078D6?logo=windows&logoColor=white)
 ![Rendering](https://img.shields.io/badge/Rendering-DX12%20%2F%20SM6-blue)
-![Version](https://img.shields.io/badge/version-1.3.0-orange)
+![Version](https://img.shields.io/badge/version-1.3.1-orange)
 ![Status](https://img.shields.io/badge/status-Beta-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -262,6 +262,7 @@ Preview reconstructs World Position and geometric normal from Scene Depth. By de
 | 8-bit output clips to white | Increase `8-bit White Level`. RGB values at or above White Level are clamped to 255. |
 | Preview or Output is marked Out of Date | Run Preview or Bake again after changing the Region, light, Caster/Receiver, material, or Bake settings. |
 | The asset is not saved after Bake | The asset is created or updated but is not saved automatically. Save it from the Content Browser or use Save All. |
+| Lumen GI is disabled while the plugin is enabled | Update to v1.3.1 or later. Earlier versions could apply the Plugin GI override to the main viewport while no dedicated capture was active. |
 | Duplicate plugin error | Ensure that only one copy of CausticsBaker exists under the project's Plugins directories. |
 
 ## v1 limitations
@@ -299,7 +300,7 @@ Automation Tests are registered under `CausticsBaker.*`. GPU tests require an Ed
   '-TestExit=Automation Test Queue Empty'
 ```
 
-For v1.3.0, the verified automated coverage includes the Win64 Editor build, PCD3D_SM6 Global Shader compilation, RGB dispersion slabs, Cauchy/Abbe optics, photon counting, HDR/8-bit output, Point/Spot/Directional Lights, occlusion, Solid Glass, SPPM, and Receiver coverage.
+For v1.3.1, the verified automated coverage includes the Win64 Editor build, PCD3D_SM6 Global Shader compilation, capture-only Plugin GI and Ray Traced Translucency overrides, main viewport Lumen preservation, RGB dispersion slabs, Cauchy/Abbe optics, photon counting, HDR/8-bit output, Point/Spot/Directional Lights, occlusion, Solid Glass, SPPM, and Receiver coverage.
 
 ## Reporting an issue
 
